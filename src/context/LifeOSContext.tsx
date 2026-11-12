@@ -53,6 +53,10 @@ interface LifeOSContextValue {
   awardXpAndCoins: (xpDelta: number, coinsDelta: number) => Promise<void>;
   // Cross-module CRUD actions
   createTask: (data: Omit<TaskItem, 'id' | 'ownerId'>) => Promise<void>;
+  updateTask: (
+    task: TaskItem,
+    partial: Partial<Omit<TaskItem, 'id' | 'ownerId'>>
+  ) => Promise<void>;
   updateTaskStatus: (
     task: TaskItem,
     status: TaskItem['status'],
@@ -392,29 +396,75 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const updateTaskStatus = async (
+  const updateTask = async (
     task: TaskItem,
-    status: TaskItem['status'],
-    statusReason?: string
+    partial: Partial<Omit<TaskItem, 'id' | 'ownerId'>>
   ) => {
     if (!user) return;
     try {
       const updatePayload: Record<string, unknown> = {
-        status,
         updatedAt: serverTimestamp(),
       };
-      if (statusReason !== undefined) {
-        updatePayload.statusReason = sanitizeString(statusReason, 300);
+      if (partial.title !== undefined) {
+        updatePayload.title = sanitizeString(partial.title, 200, task.title);
       }
+      if (partial.notes !== undefined) {
+        updatePayload.notes = sanitizeString(partial.notes, 2000);
+      }
+      if (partial.priority !== undefined) {
+        updatePayload.priority = partial.priority;
+      }
+      if (partial.status !== undefined) {
+        updatePayload.status = partial.status;
+      }
+      if (partial.statusReason !== undefined) {
+        updatePayload.statusReason = sanitizeString(partial.statusReason, 300);
+      }
+      if (partial.category !== undefined) {
+        updatePayload.category = partial.category;
+      }
+      if (partial.estimatedMinutes !== undefined) {
+        updatePayload.estimatedMinutes = Math.max(
+          1,
+          Math.min(1440, Math.round(partial.estimatedMinutes))
+        );
+      }
+      if (partial.actualMinutes !== undefined) {
+        updatePayload.actualMinutes = Math.max(
+          0,
+          Math.min(1440, Math.round(partial.actualMinutes))
+        );
+      }
+      if (partial.dueDate !== undefined) {
+        updatePayload.dueDate = sanitizeString(partial.dueDate, 32, todayDate);
+      }
+      if (partial.scheduledStart !== undefined) {
+        updatePayload.scheduledStart = sanitizeString(partial.scheduledStart, 32);
+      }
+      if (partial.linkedGoalId !== undefined) {
+        updatePayload.linkedGoalId = sanitizeString(partial.linkedGoalId, 128);
+      }
+      if (partial.linkedModuleId !== undefined) {
+        updatePayload.linkedModuleId = sanitizeString(partial.linkedModuleId, 128);
+      }
+
       await updateDoc(doc(db, 'tasks', task.id), updatePayload);
 
-      if (status === 'completed' && task.status !== 'completed') {
+      if (partial.status === 'completed' && task.status !== 'completed') {
         const xpGain = task.priority === 'critical' ? 40 : task.priority === 'high' ? 30 : 20;
         await awardXpAndCoins(xpGain, 10);
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `tasks/${task.id}`);
     }
+  };
+
+  const updateTaskStatus = async (
+    task: TaskItem,
+    status: TaskItem['status'],
+    statusReason?: string
+  ) => {
+    await updateTask(task, { status, ...(statusReason !== undefined ? { statusReason } : {}) });
   };
 
   const deleteTask = async (taskId: string) => {
@@ -1015,6 +1065,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updateProfileSettings,
         awardXpAndCoins,
         createTask,
+        updateTask,
         updateTaskStatus,
         deleteTask,
         createCalendarEvent,

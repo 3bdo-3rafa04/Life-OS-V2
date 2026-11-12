@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { LifeOSProvider, useLifeOS } from './context/LifeOSContext';
 import { DashboardView } from './components/DashboardView';
 import { CalendarTasksView } from './components/CalendarTasksView';
+import { TasksView } from './components/TasksView';
 import { StudyView } from './components/StudyView';
 import { LibraryView } from './components/LibraryView';
 import { HealthView } from './components/HealthView';
@@ -14,6 +15,7 @@ import { QuickAddModal } from './components/QuickAddModal';
 import {
   LayoutGrid,
   Calendar,
+  CheckSquare,
   BookOpen,
   Library,
   HeartPulse,
@@ -35,6 +37,7 @@ import {
 export type NavTab =
   | 'dashboard'
   | 'calendar'
+  | 'tasks'
   | 'study'
   | 'library'
   | 'health'
@@ -47,7 +50,8 @@ export type NavTab =
 const NAV_ITEMS: { id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }[] =
   [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutGrid },
-    { id: 'calendar', label: 'Calendar & Tasks', icon: Calendar },
+    { id: 'calendar', label: 'Calendar', icon: Calendar },
+    { id: 'tasks', label: 'Tasks', icon: CheckSquare },
     { id: 'study', label: 'Study', icon: BookOpen },
     { id: 'library', label: 'Library & Notes', icon: Library },
     { id: 'health', label: 'Health', icon: HeartPulse },
@@ -142,7 +146,7 @@ const LifeOSShell: React.FC = () => {
         id: `task-${t.id}`,
         title: `Task due today: ${t.title}`,
         subtitle: `${t.category} · ${t.estimatedMinutes}m · ${t.priority}`,
-        tab: 'calendar',
+        tab: 'tasks',
         color: '#9BB9A2',
       });
     }
@@ -262,6 +266,11 @@ const LifeOSShell: React.FC = () => {
                 >
                   <Icon className={`w-4 h-4 ${isActive ? 'text-[#9BB9A2]' : ''}`} />
                   <span>{item.label}</span>
+                  {item.id === 'tasks' && totalTasksCount - completedTasksCount > 0 && (
+                    <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-mono tabular-nums bg-[#9BB9A2]/20 text-[#9BB9A2]">
+                      {totalTasksCount - completedTasksCount}
+                    </span>
+                  )}
                   {item.id === 'spoon-feeder' && pendingAiLogs.length > 0 && (
                     <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E5B567]/20 text-[#E5B567]">
                       {pendingAiLogs.length}
@@ -332,7 +341,7 @@ const LifeOSShell: React.FC = () => {
           {/* Right Actions */}
           <div className="flex items-center gap-2.5">
             <button
-              onClick={() => setActiveTab('calendar')}
+              onClick={() => setActiveTab('tasks')}
               className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#E5B567]/15 text-[#E5B567] text-xs font-semibold"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-[#E5B567]" />
@@ -424,7 +433,7 @@ const LifeOSShell: React.FC = () => {
             <DashboardView
               onNavigate={(dest) => {
                 if (dest === 'overview') setActiveTab('dashboard');
-                else if (dest === 'tasks') setActiveTab('calendar');
+                else if (dest === 'tasks') setActiveTab('tasks');
                 else if (dest === 'rank') setActiveTab('goals');
                 else if (dest === 'spoon_feeder') setActiveTab('spoon-feeder');
                 else setActiveTab(dest as NavTab);
@@ -433,7 +442,10 @@ const LifeOSShell: React.FC = () => {
               onOpenSpoonFeeder={() => setActiveTab('spoon-feeder')}
             />
           )}
-          {activeTab === 'calendar' && <CalendarTasksView />}
+          {activeTab === 'calendar' && <CalendarTasksView mode="calendar" />}
+          {activeTab === 'tasks' && (
+            <TasksView onNavigateCalendar={() => setActiveTab('calendar')} />
+          )}
           {activeTab === 'study' && <StudyView />}
           {activeTab === 'library' && <LibraryView />}
           {activeTab === 'health' && <HealthView />}
@@ -536,7 +548,7 @@ const LifeOSShell: React.FC = () => {
                       <button
                         key={t.id}
                         onClick={() => {
-                          setActiveTab('calendar');
+                          setActiveTab('tasks');
                           setShowSearchModal(false);
                         }}
                         className="w-full text-left px-3 py-2 rounded-xl hover:bg-[var(--bg-secondary)] flex items-center justify-between text-xs"
