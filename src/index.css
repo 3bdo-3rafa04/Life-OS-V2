@@ -6,10 +6,37 @@
     --font-display: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+
+    /* Light Mode Sage Palette (from Life OS Design System p.3) */
+    --bg-canvas: #F7F7F2;
+    --bg-card: rgba(255, 255, 255, 0.88);
+    --bg-secondary: #DCE6DC;
+    --text-primary: #29332E;
+    --text-muted: #5C6B62;
+    --accent-sage: #456B57;
+    --accent-sage-soft: #8FA995;
+    --border-glass: rgba(69, 107, 87, 0.16);
+  }
+
+  .dark {
+    /* Dark Mode Sage Glass Palette (from Life OS Design System p.3) */
+    --bg-canvas: #171E1B;
+    --bg-card: rgba(34, 44, 39, 0.82);
+    --bg-secondary: #2C3932;
+    --text-primary: #E8EDE8;
+    --text-muted: #9BB0A3;
+    --accent-sage: #9BB9A2;
+    --accent-sage-soft: #BDD3C1;
+    --border-glass: rgba(189, 211, 193, 0.14);
   }
 
   body {
     font-family: var(--font-sans);
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    background-image: radial-gradient(circle at 12% 18%, rgba(155, 185, 162, 0.09) 0%, transparent 48%),
+                      radial-gradient(circle at 85% 82%, rgba(122, 184, 147, 0.06) 0%, transparent 45%);
+    background-attachment: fixed;
   }
 
   h1, h2, h3, h4, .font-display {
@@ -20,4 +47,54 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+}
+
+/* Sage Glass Utility Classes matching p.3 specification */
+.sage-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: 15px;
+  backdrop-filter: blur(12px);
+}
+
+.sage-secondary {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-glass);
+  border-radius: 11px;
+}
+
+.sage-input {
+  background-color: var(--bg-canvas);
+  border: 1px solid var(--border-glass);
+  color: var(--text-primary);
+  border-radius: 11px;
+}
+
+.sage-input:focus {
+  outline: none;
+  border-color: var(--accent-sage);
+}
+
+.sage-btn-primary {
+  background-color: #9BB9A2;
+  color: #171E1B;
+  font-weight: 600;
+  border-radius: 9999px;
+  transition: opacity 150ms ease;
+}
+
+.sage-btn-primary:hover {
+  opacity: 0.92;
+}
+
+.sage-btn-outline {
+  background-color: transparent;
+  border: 1px solid var(--border-glass);
+  color: var(--text-primary);
+  border-radius: 9999px;
+  transition: background-color 150ms ease;
+}
+
+.sage-btn-outline:hover {
+  background-color: var(--bg-secondary);
 }

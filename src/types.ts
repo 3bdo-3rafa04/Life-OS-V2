@@ -1,14 +1,31 @@
 export type NavDestination =
-  | 'dashboard'
+  | 'overview'
   | 'calendar'
+  | 'tasks'
   | 'study'
+  | 'library'
   | 'health'
   | 'finance'
-  | 'library'
   | 'goals'
   | 'rank'
   | 'analytics'
-  | 'spoon_feeder';
+  | 'spoon_feeder'
+  | 'settings';
+
+export type SubPageMap = {
+  overview: 'dashboard';
+  calendar: 'week' | 'day_month' | 'agenda';
+  tasks: 'board' | 'list';
+  study: 'modules' | 'exams' | 'flashcards' | 'schedule_import' | 'analytics';
+  library: 'books' | 'courses' | 'podcasts';
+  health: 'measurements' | 'workouts' | 'nutrition' | 'sleep_water';
+  finance: 'transactions' | 'budgets' | 'subscriptions' | 'savings';
+  goals: 'goals' | 'projects' | 'habits';
+  rank: 'quests' | 'achievements' | 'rewards';
+  analytics: 'overview' | 'reports';
+  spoon_feeder: 'workspace';
+  settings: 'permissions';
+};
 
 export interface UserProfile {
   uid: string;
@@ -125,7 +142,7 @@ export interface FinanceRecordItem {
   title: string;
   category: string;
   accountName: string;
-  amountMinor: number; // Stored in exact integer cents
+  amountMinor: number;
   targetAmountMinor?: number;
   date: string;
   isRecurring?: boolean;

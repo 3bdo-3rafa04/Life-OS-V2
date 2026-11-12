@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
 import {
   auth,
@@ -51,7 +51,7 @@ interface LifeOSContextValue {
   logOut: () => Promise<void>;
   updateProfileSettings: (partial: Partial<UserProfile>) => Promise<void>;
   awardXpAndCoins: (xpDelta: number, coinsDelta: number) => Promise<void>;
-  // Cross-module actions
+  // Cross-module CRUD actions
   createTask: (data: Omit<TaskItem, 'id' | 'ownerId'>) => Promise<void>;
   updateTaskStatus: (
     task: TaskItem,
@@ -62,7 +62,9 @@ interface LifeOSContextValue {
   createCalendarEvent: (data: Omit<CalendarEventItem, 'id' | 'ownerId'>) => Promise<void>;
   deleteCalendarEvent: (eventId: string) => Promise<void>;
   createStudyModule: (data: Omit<StudyModuleItem, 'id' | 'ownerId'>) => Promise<string>;
+  deleteStudyModule: (moduleId: string) => Promise<void>;
   createStudyItem: (data: Omit<StudyItemRecord, 'id' | 'ownerId'>) => Promise<void>;
+  deleteStudyItem: (itemId: string) => Promise<void>;
   recordStudyFeedback: (
     item: StudyItemRecord,
     confidenceRating: number,
@@ -72,6 +74,7 @@ interface LifeOSContextValue {
     data: Omit<HealthLogRecord, 'id' | 'ownerId'>,
     scheduleOnCalendar?: boolean
   ) => Promise<void>;
+  deleteHealthLog: (logId: string) => Promise<void>;
   createFinanceRecord: (data: Omit<FinanceRecordItem, 'id' | 'ownerId'>) => Promise<void>;
   deleteFinanceRecord: (recordId: string) => Promise<void>;
   createKnowledgeItem: (data: Omit<KnowledgeItemRecord, 'id' | 'ownerId'>) => Promise<void>;
@@ -80,13 +83,19 @@ interface LifeOSContextValue {
     newCurrent: number,
     takeaways?: string
   ) => Promise<void>;
+  deleteKnowledgeItem: (itemId: string) => Promise<void>;
   createGoalHabit: (data: Omit<GoalHabitRecord, 'id' | 'ownerId'>) => Promise<void>;
   toggleHabitOrGoalCompletion: (record: GoalHabitRecord) => Promise<void>;
+  deleteGoalHabit: (recordId: string) => Promise<void>;
   redeemReward: (reward: GoalHabitRecord) => Promise<void>;
   logAiAction: (data: Omit<AiActionLogRecord, 'id' | 'ownerId'>) => Promise<void>;
-  resolveAiProposal: (log: AiActionLogRecord, decision: 'approved' | 'rejected' | 'undone') => Promise<void>;
+  resolveAiProposal: (
+    log: AiActionLogRecord,
+    decision: 'approved' | 'rejected' | 'undone'
+  ) => Promise<void>;
+  deleteAiLog: (logId: string) => Promise<void>;
   saveDailyReview: (data: Omit<DailyReviewRecord, 'id' | 'ownerId'>) => Promise<void>;
-  seedInitialWorkspaceIfEmpty: () => Promise<void>;
+  clearAllWorkspaceData: () => Promise<void>;
 }
 
 const LifeOSContext = createContext<LifeOSContextValue | undefined>(undefined);
@@ -95,6 +104,38 @@ const sanitizeString = (val: string | undefined, maxLen: number, fallback = ''):
   const s = (val ?? fallback).trim();
   return s.slice(0, maxLen);
 };
+
+// Titles of previously seeded sample records to automatically purge if present
+const LEGACY_SAMPLE_TITLES = new Set([
+  'Distributed Systems & Consensus',
+  'Lecture 4: Raft Leader Election & Log Replication',
+  'Lecture 5: Byzantine Fault Tolerance & PBFT',
+  'Fajr Prayer & Morning Reflection',
+  'CS304 Distributed Systems Lecture',
+  'Dhuhr Prayer Anchor',
+  'Asr Prayer Anchor',
+  'Upper Body Strength Hypertrophy',
+  'Complete active recall revision for CS304 Raft Consensus',
+  'Reconcile monthly grocery & study material budget',
+  'Lab server SSH key rotation (Waiting on DevOps team)',
+  'Morning Baseline Check-in',
+  'Upper Body Push / Pull Session',
+  'Post-Lecture Salmon, Quinoa & Avocado Bowl',
+  'Research Assistantship Stipend',
+  'Whole Foods Weekly Groceries',
+  'Monthly Groceries & Nutrition Cap',
+  'Emergency & Post-Grad Relocation Fund',
+  'Designing Data-Intensive Applications',
+  'Huberman Lab: Optimizing Deep Work & Ultradian Cycles',
+  'Achieve First-Class Honours in Computer Science Term',
+  '90-Minute Morning Deep Study Block Before Checking Messages',
+  'Weekly Consistency Quest: 4 Study Revisions + 3 Strength Workouts',
+  'Guilt-Free Specialty Coffee & Sci-Fi Reading Evening',
+  'Propose Rebalancing Afternoon Study Block Around Asr Prayer',
+  'Cornea & external eye',
+  'Revision: Glaucoma pharmacology',
+  'Lens & cataract — revision + recall',
+]);
 
 export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -111,6 +152,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [aiLogs, setAiLogs] = useState<AiActionLogRecord[]>([]);
   const [dailyReviews, setDailyReviews] = useState<DailyReviewRecord[]>([]);
 
+  const purgedRef = useRef(false);
   const todayDate = new Date().toISOString().split('T')[0];
 
   useEffect(() => {
@@ -124,20 +166,20 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           if (!snap.exists()) {
             const initialProfile = {
               uid: currUser.uid,
-              displayName: sanitizeString(currUser.displayName || 'Life OS Owner', 100, 'Owner'),
-              currency: 'USD',
+              displayName: sanitizeString(currUser.displayName || 'Life OS User', 100, 'User'),
+              currency: 'EGP',
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-              city: 'London',
-              prayerMethod: 'MWL' as const,
+              city: 'Cairo',
+              prayerMethod: 'Egypt' as const,
               prayerBufferMinutes: 15,
-              xp: 340,
-              level: 2,
-              coins: 120,
-              streakDays: 5,
+              xp: 0,
+              level: 1,
+              coins: 0,
+              streakDays: 0,
               calorieTarget: 2350,
               proteinTargetGrams: 165,
               waterTargetMl: 3000,
-              waterLoggedTodayMl: 1500,
+              waterLoggedTodayMl: 0,
               aiRoutineAutoApprove: true,
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
@@ -210,6 +252,84 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     return () => unsubs.forEach((u) => u());
   }, [authReady, user]);
+
+  // Automatically remove any legacy seeded sample records from Firestore once loaded
+  useEffect(() => {
+    if (!user || purgedRef.current) return;
+    const hasSample =
+      tasks.some((t) => LEGACY_SAMPLE_TITLES.has(t.title)) ||
+      events.some((e) => LEGACY_SAMPLE_TITLES.has(e.title)) ||
+      studyModules.some((m) => LEGACY_SAMPLE_TITLES.has(m.title) || m.code === 'CS304') ||
+      studyItems.some((s) => LEGACY_SAMPLE_TITLES.has(s.title) || s.moduleCode === 'CS304') ||
+      healthLogs.some((h) => LEGACY_SAMPLE_TITLES.has(h.title)) ||
+      financeRecords.some((f) => LEGACY_SAMPLE_TITLES.has(f.title)) ||
+      knowledgeItems.some((k) => LEGACY_SAMPLE_TITLES.has(k.title)) ||
+      goalsHabits.some((g) => LEGACY_SAMPLE_TITLES.has(g.title)) ||
+      aiLogs.some((a) => LEGACY_SAMPLE_TITLES.has(a.actionTitle));
+
+    if (!hasSample) return;
+    purgedRef.current = true;
+
+    const purge = async () => {
+      for (const s of studyItems) {
+        if (LEGACY_SAMPLE_TITLES.has(s.title) || s.moduleCode === 'CS304') {
+          await deleteDoc(doc(db, 'study_items', s.id)).catch(() => {});
+        }
+      }
+      for (const m of studyModules) {
+        if (LEGACY_SAMPLE_TITLES.has(m.title) || m.code === 'CS304') {
+          await deleteDoc(doc(db, 'study_modules', m.id)).catch(() => {});
+        }
+      }
+      for (const t of tasks) {
+        if (LEGACY_SAMPLE_TITLES.has(t.title)) {
+          await deleteDoc(doc(db, 'tasks', t.id)).catch(() => {});
+        }
+      }
+      for (const e of events) {
+        if (LEGACY_SAMPLE_TITLES.has(e.title) || e.title.includes('CS304')) {
+          await deleteDoc(doc(db, 'calendar_events', e.id)).catch(() => {});
+        }
+      }
+      for (const h of healthLogs) {
+        if (LEGACY_SAMPLE_TITLES.has(h.title)) {
+          await deleteDoc(doc(db, 'health_logs', h.id)).catch(() => {});
+        }
+      }
+      for (const f of financeRecords) {
+        if (LEGACY_SAMPLE_TITLES.has(f.title)) {
+          await deleteDoc(doc(db, 'finance_records', f.id)).catch(() => {});
+        }
+      }
+      for (const k of knowledgeItems) {
+        if (LEGACY_SAMPLE_TITLES.has(k.title)) {
+          await deleteDoc(doc(db, 'knowledge_items', k.id)).catch(() => {});
+        }
+      }
+      for (const g of goalsHabits) {
+        if (LEGACY_SAMPLE_TITLES.has(g.title)) {
+          await deleteDoc(doc(db, 'goals_habits', g.id)).catch(() => {});
+        }
+      }
+      for (const a of aiLogs) {
+        if (LEGACY_SAMPLE_TITLES.has(a.actionTitle)) {
+          await deleteDoc(doc(db, 'ai_action_logs', a.id)).catch(() => {});
+        }
+      }
+    };
+    purge();
+  }, [
+    user,
+    tasks,
+    events,
+    studyModules,
+    studyItems,
+    healthLogs,
+    financeRecords,
+    knowledgeItems,
+    goalsHabits,
+    aiLogs,
+  ]);
 
   const signIn = async () => {
     await signInWithPopup(auth, googleProvider);
@@ -288,7 +408,6 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       await updateDoc(doc(db, 'tasks', task.id), updatePayload);
 
-      // Cross-module event: task.completed -> award XP/coins & advance linked goal
       if (status === 'completed' && task.status !== 'completed') {
         const xpGain = task.priority === 'critical' ? 40 : task.priority === 'high' ? 30 : 20;
         await awardXpAndCoins(xpGain, 10);
@@ -338,14 +457,16 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const createStudyModule = async (data: Omit<StudyModuleItem, 'id' | 'ownerId'>): Promise<string> => {
+  const createStudyModule = async (
+    data: Omit<StudyModuleItem, 'id' | 'ownerId'>
+  ): Promise<string> => {
     if (!user) return '';
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
         code: sanitizeString(data.code, 32, 'MOD101'),
         title: sanitizeString(data.title, 200, 'Academic Module'),
-        term: sanitizeString(data.term, 64, 'Autumn Term'),
+        term: sanitizeString(data.term, 64, 'Current Term'),
         examDate: sanitizeString(data.examDate, 32, todayDate),
         totalLectures: Math.max(0, Math.min(500, Math.round(data.totalLectures || 12))),
         completedLectures: Math.max(0, Math.min(500, Math.round(data.completedLectures || 0))),
@@ -355,14 +476,13 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (data.targetGrade) payload.targetGrade = sanitizeString(data.targetGrade, 16);
       const ref = await addDoc(collection(db, 'study_modules'), payload);
 
-      // Cross-module integration: exam date added -> place exam anchor in Calendar
       await createCalendarEvent({
         title: `Exam: ${data.code} — ${data.title}`,
         eventType: 'exam',
-        date: data.examDate,
+        date: data.examDate || todayDate,
         startTime: '09:00',
         endTime: '12:00',
-        location: 'Examination Hall',
+        location: 'Exam Hall',
         isProtectedAnchor: true,
         linkedRecordId: ref.id,
       });
@@ -370,16 +490,48 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return ref.id;
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'study_modules');
+      return '';
+    }
+  };
+
+  const deleteStudyModule = async (moduleId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'study_modules', moduleId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `study_modules/${moduleId}`);
     }
   };
 
   const createStudyItem = async (data: Omit<StudyItemRecord, 'id' | 'ownerId'>) => {
     if (!user) return;
     try {
+      // Ensure parent moduleId exists in study_modules to satisfy Firestore relational rule
+      let validModuleId = data.moduleId;
+      let validModuleCode = data.moduleCode || 'MOD';
+
+      const existsInState = studyModules.some((m) => m.id === validModuleId);
+      if (!existsInState) {
+        if (studyModules.length > 0) {
+          validModuleId = studyModules[0].id;
+          validModuleCode = studyModules[0].code;
+        } else {
+          const createdId = await createStudyModule({
+            code: sanitizeString(data.moduleCode, 32, 'GEN101'),
+            title: sanitizeString(data.moduleCode || 'General Study Module', 200),
+            term: 'Current Term',
+            examDate: todayDate,
+            totalLectures: 10,
+            completedLectures: 0,
+          });
+          validModuleId = createdId;
+        }
+      }
+
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
-        moduleId: sanitizeString(data.moduleId, 128),
-        moduleCode: sanitizeString(data.moduleCode, 32, 'MOD'),
+        moduleId: sanitizeString(validModuleId, 128),
+        moduleCode: sanitizeString(validModuleCode, 32, 'MOD'),
         title: sanitizeString(data.title, 200, 'Lecture Topic'),
         itemType: data.itemType,
         status: data.status || 'unstudied',
@@ -393,7 +545,9 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       };
       if (data.stabilityDays !== undefined) payload.stabilityDays = data.stabilityDays;
       if (data.difficultyScore !== undefined) payload.difficultyScore = data.difficultyScore;
-      if (data.lastStudiedDate) payload.lastStudiedDate = sanitizeString(data.lastStudiedDate, 32);
+      if (data.lastStudiedDate) {
+        payload.lastStudiedDate = sanitizeString(data.lastStudiedDate, 32);
+      }
       if (data.notes) payload.notes = sanitizeString(data.notes, 4000);
       if (data.frontPrompt) payload.frontPrompt = sanitizeString(data.frontPrompt, 500);
       if (data.backAnswer) payload.backAnswer = sanitizeString(data.backAnswer, 2000);
@@ -405,7 +559,15 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  // FSRS-style spaced repetition scheduling calculation
+  const deleteStudyItem = async (itemId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'study_items', itemId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `study_items/${itemId}`);
+    }
+  };
+
   const recordStudyFeedback = async (
     item: StudyItemRecord,
     confidenceRating: number,
@@ -415,8 +577,8 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const rating = Math.max(1, Math.min(5, Math.round(confidenceRating)));
     const prevReps = item.repetitionCount || 0;
     const prevStability = item.stabilityDays || 1;
-    // FSRS stability multiplier based on recall confidence (1=Again, 2=Hard, 3=Good, 4=Strong, 5=Easy)
-    const multiplier = rating === 1 ? 0.5 : rating === 2 ? 1.2 : rating === 3 ? 2.2 : rating === 4 ? 3.2 : 4.5;
+    const multiplier =
+      rating === 1 ? 0.5 : rating === 2 ? 1.2 : rating === 3 ? 2.2 : rating === 4 ? 3.2 : 4.5;
     const nextStabilityDays = Math.max(1, Math.round(prevStability * multiplier * 10) / 10);
     const intervalDays = Math.max(1, Math.round(nextStabilityDays));
 
@@ -424,7 +586,8 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     nextDateObj.setDate(nextDateObj.getDate() + intervalDays);
     const nextReviewDate = nextDateObj.toISOString().split('T')[0];
 
-    const newStatus: StudyItemRecord['status'] = rating >= 4 && prevReps >= 2 ? 'mastered' : 'studied';
+    const newStatus: StudyItemRecord['status'] =
+      rating >= 4 && prevReps >= 2 ? 'mastered' : 'studied';
 
     try {
       await updateDoc(doc(db, 'study_items', item.id), {
@@ -437,7 +600,6 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updatedAt: serverTimestamp(),
       });
 
-      // Update parent module completed lecture count if first time studying lecture
       if (item.itemType === 'lecture' && item.status === 'unstudied') {
         const parentMod = studyModules.find((m) => m.id === item.moduleId);
         if (parentMod) {
@@ -448,7 +610,6 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       }
 
-      // Cross-module event: lecture.studied -> award XP & coins
       await awardXpAndCoins(35, 15);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `study_items/${item.id}`);
@@ -473,10 +634,14 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (data.waistCm !== undefined) payload.waistCm = Number(data.waistCm);
       if (data.chestCm !== undefined) payload.chestCm = Number(data.chestCm);
       if (data.armsCm !== undefined) payload.armsCm = Number(data.armsCm);
-      if (data.durationMinutes !== undefined) payload.durationMinutes = Math.round(data.durationMinutes);
+      if (data.durationMinutes !== undefined) {
+        payload.durationMinutes = Math.round(data.durationMinutes);
+      }
       if (data.volumeKg !== undefined) payload.volumeKg = Math.round(data.volumeKg);
       if (data.rpe !== undefined) payload.rpe = Math.max(1, Math.min(10, Math.round(data.rpe)));
-      if (data.exercisesSummary) payload.exercisesSummary = sanitizeString(data.exercisesSummary, 1500);
+      if (data.exercisesSummary) {
+        payload.exercisesSummary = sanitizeString(data.exercisesSummary, 1500);
+      }
       if (data.calories !== undefined) payload.calories = Math.round(data.calories);
       if (data.proteinGrams !== undefined) payload.proteinGrams = Math.round(data.proteinGrams);
       if (data.carbsGrams !== undefined) payload.carbsGrams = Math.round(data.carbsGrams);
@@ -494,7 +659,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             date: data.date || todayDate,
             startTime: '17:30',
             endTime: '18:30',
-            location: 'Gym / Training Space',
+            location: 'Gym',
             isProtectedAnchor: false,
             linkedRecordId: ref.id,
           });
@@ -507,6 +672,15 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const deleteHealthLog = async (logId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'health_logs', logId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `health_logs/${logId}`);
+    }
+  };
+
   const createFinanceRecord = async (data: Omit<FinanceRecordItem, 'id' | 'ownerId'>) => {
     if (!user) return;
     try {
@@ -515,7 +689,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         recordType: data.recordType,
         title: sanitizeString(data.title, 200, 'Transaction'),
         category: sanitizeString(data.category, 64, 'General'),
-        accountName: sanitizeString(data.accountName, 64, 'Main Checking'),
+        accountName: sanitizeString(data.accountName, 64, 'Cash'),
         amountMinor: Math.max(0, Math.round(data.amountMinor)),
         date: sanitizeString(data.date, 16, todayDate),
         createdAt: serverTimestamp(),
@@ -557,7 +731,9 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updatedAt: serverTimestamp(),
       };
       if (data.authorOrSource) payload.authorOrSource = sanitizeString(data.authorOrSource, 150);
-      if (data.rating !== undefined) payload.rating = Math.max(1, Math.min(5, Math.round(data.rating)));
+      if (data.rating !== undefined) {
+        payload.rating = Math.max(1, Math.min(5, Math.round(data.rating)));
+      }
       if (data.tags) payload.tags = sanitizeString(data.tags, 200);
       if (data.takeaways) payload.takeaways = sanitizeString(data.takeaways, 4000);
       if (data.linkedEntityId) payload.linkedEntityId = sanitizeString(data.linkedEntityId, 128);
@@ -593,6 +769,15 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const deleteKnowledgeItem = async (itemId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'knowledge_items', itemId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `knowledge_items/${itemId}`);
+    }
+  };
+
   const createGoalHabit = async (data: Omit<GoalHabitRecord, 'id' | 'ownerId'>) => {
     if (!user) return;
     try {
@@ -611,9 +796,13 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updatedAt: serverTimestamp(),
       };
       if (data.whyReason) payload.whyReason = sanitizeString(data.whyReason, 500);
-      if (data.lastCompletedDate) payload.lastCompletedDate = sanitizeString(data.lastCompletedDate, 16);
+      if (data.lastCompletedDate) {
+        payload.lastCompletedDate = sanitizeString(data.lastCompletedDate, 16);
+      }
       if (data.targetDate) payload.targetDate = sanitizeString(data.targetDate, 16);
-      if (data.nextSmallAction) payload.nextSmallAction = sanitizeString(data.nextSmallAction, 300);
+      if (data.nextSmallAction) {
+        payload.nextSmallAction = sanitizeString(data.nextSmallAction, 300);
+      }
 
       await addDoc(collection(db, 'goals_habits'), payload);
     } catch (err) {
@@ -648,6 +837,15 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const deleteGoalHabit = async (recordId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'goals_habits', recordId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `goals_habits/${recordId}`);
+    }
+  };
+
   const redeemReward = async (reward: GoalHabitRecord) => {
     if (!user || !profile) return;
     if (profile.coins < reward.coinCostOrReward) return;
@@ -658,7 +856,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       permissionLevel: 'routine_write',
       status: 'executed',
       targetModule: 'Rank & Rewards',
-      summary: `Spent ${reward.coinCostOrReward} coins on "${reward.title}". Rest & recovery honored.`,
+      summary: `Spent ${reward.coinCostOrReward} coins on "${reward.title}".`,
     });
   };
 
@@ -697,7 +895,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             recordType: parsed.recordType || 'expense',
             title: parsed.title || 'Approved AI Entry',
             category: parsed.category || 'General',
-            accountName: parsed.accountName || 'Main Checking',
+            accountName: parsed.accountName || 'Cash',
             amountMinor,
             date: todayDate,
           });
@@ -709,7 +907,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               date: todayDate,
               startTime: b.startTime || '14:00',
               endTime: b.endTime || '15:00',
-              location: 'AI Time-Blocked',
+              location: 'Study Desk',
               isProtectedAnchor: false,
             });
           }
@@ -721,6 +919,15 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `ai_action_logs/${log.id}`);
+    }
+  };
+
+  const deleteAiLog = async (logId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'ai_action_logs', logId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `ai_action_logs/${logId}`);
     }
   };
 
@@ -752,307 +959,38 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const seedInitialWorkspaceIfEmpty = async () => {
-    if (!user || tasks.length > 0 || studyModules.length > 0) return;
-
-    // 1. Seed Academic Study Module & Lectures/Flashcards
-    const mod1Id = await createStudyModule({
-      code: 'CS304',
-      title: 'Distributed Systems & Consensus',
-      term: 'Autumn Term',
-      examDate: '2026-12-14',
-      targetGrade: 'A',
-      totalLectures: 10,
-      completedLectures: 3,
-    });
-
-    if (mod1Id) {
-      await createStudyItem({
-        moduleId: mod1Id,
-        moduleCode: 'CS304',
-        title: 'Lecture 4: Raft Leader Election & Log Replication',
-        itemType: 'lecture',
-        status: 'review_due',
-        importance: 'high',
-        estimatedMinutes: 50,
-        confidenceRating: 3,
-        stabilityDays: 2.5,
-        repetitionCount: 2,
-        lastStudiedDate: todayDate,
-        nextReviewDate: todayDate,
-        notes: 'Safety property: Election safety guarantees at most one leader per term.',
-        frontPrompt: 'What condition must a candidate satisfy to win a Raft leader election?',
-        backAnswer: 'It must receive votes from a strict majority (quorum) of servers in the cluster for the same term, and its log must be at least as up-to-date as any other node in that quorum.',
-        sourceRef: 'CS304_Lecture4_Slides.pdf (p. 14)',
-      });
-
-      await createStudyItem({
-        moduleId: mod1Id,
-        moduleCode: 'CS304',
-        title: 'Lecture 5: Byzantine Fault Tolerance & PBFT',
-        itemType: 'lecture',
-        status: 'unstudied',
-        importance: 'high',
-        estimatedMinutes: 60,
-        confidenceRating: 2,
-        stabilityDays: 1,
-        repetitionCount: 0,
-        nextReviewDate: todayDate,
-        notes: 'Requires 3f + 1 total nodes to tolerate f Byzantine faults.',
-        frontPrompt: 'Why does PBFT require 3f + 1 replicas to tolerate f Byzantine faults?',
-        backAnswer: 'Because f nodes may be unresponsive, so progress must rely on 2f + 1 responses, among which f could still be malicious; thus f + 1 honest responses are needed to outvote f faulty ones.',
-        sourceRef: 'CS304_Lecture5_Notes.pdf',
-      });
+  const clearAllWorkspaceData = async () => {
+    if (!user) return;
+    for (const s of studyItems) {
+      await deleteDoc(doc(db, 'study_items', s.id)).catch(() => {});
     }
-
-    // 2. Seed Protected Prayer Anchors & Fixed Schedule for Today
-    const defaultEvents: Omit<CalendarEventItem, 'id' | 'ownerId'>[] = [
-      {
-        title: 'Fajr Prayer & Morning Reflection',
-        eventType: 'prayer',
-        date: todayDate,
-        startTime: '05:45',
-        endTime: '06:15',
-        location: 'Protected Anchor (MWL +15m buffer)',
-        isProtectedAnchor: true,
-      },
-      {
-        title: 'CS304 Distributed Systems Lecture',
-        eventType: 'lecture',
-        date: todayDate,
-        startTime: '10:00',
-        endTime: '11:30',
-        location: 'Engineering Hall 3B',
-        isProtectedAnchor: true,
-      },
-      {
-        title: 'Dhuhr Prayer Anchor',
-        eventType: 'prayer',
-        date: todayDate,
-        startTime: '12:30',
-        endTime: '13:00',
-        location: 'Campus Prayer Room',
-        isProtectedAnchor: true,
-      },
-      {
-        title: 'Asr Prayer Anchor',
-        eventType: 'prayer',
-        date: todayDate,
-        startTime: '15:15',
-        endTime: '15:40',
-        location: 'Protected Anchor',
-        isProtectedAnchor: true,
-      },
-      {
-        title: 'Upper Body Strength Hypertrophy',
-        eventType: 'workout',
-        date: todayDate,
-        startTime: '17:30',
-        endTime: '18:30',
-        location: 'University Athletics Center',
-        isProtectedAnchor: false,
-      },
-    ];
-    for (const ev of defaultEvents) {
-      await createCalendarEvent(ev);
+    for (const m of studyModules) {
+      await deleteDoc(doc(db, 'study_modules', m.id)).catch(() => {});
     }
-
-    // 3. Seed Tasks Due Today
-    await createTask({
-      title: 'Complete active recall revision for CS304 Raft Consensus',
-      priority: 'critical',
-      status: 'todo',
-      category: 'study',
-      estimatedMinutes: 45,
-      dueDate: todayDate,
-      scheduledStart: '13:30',
-      notes: 'Focus on log replication invariants before quiz.',
-    });
-    await createTask({
-      title: 'Reconcile monthly grocery & study material budget',
-      priority: 'medium',
-      status: 'todo',
-      category: 'finance',
-      estimatedMinutes: 20,
-      dueDate: todayDate,
-      scheduledStart: '16:00',
-    });
-    await createTask({
-      title: 'Lab server SSH key rotation (Waiting on DevOps team)',
-      priority: 'low',
-      status: 'blocked',
-      statusReason: 'Blocked by university IT ticket #4821 — not penalized in Daily Rating',
-      category: 'work',
-      estimatedMinutes: 30,
-      dueDate: todayDate,
-    });
-
-    // 4. Seed Health Logs
-    await createHealthLog({
-      logType: 'measurement',
-      date: todayDate,
-      title: 'Morning Baseline Check-in',
-      weightKg: 74.2,
-      waistCm: 79.5,
-      chestCm: 101.0,
-      armsCm: 36.5,
-      notes: 'Rested 7.5h, steady hydration.',
-    });
-    await createHealthLog({
-      logType: 'workout',
-      date: todayDate,
-      title: 'Upper Body Push / Pull Session',
-      durationMinutes: 55,
-      volumeKg: 4820,
-      rpe: 8,
-      exercisesSummary: 'Bench Press 4x8 @ 80kg · Weighted Pull-ups 4x6 @ +15kg · Overhead Press 3x10 @ 50kg',
-    });
-    await createHealthLog({
-      logType: 'meal',
-      date: todayDate,
-      title: 'Post-Lecture Salmon, Quinoa & Avocado Bowl',
-      calories: 740,
-      proteinGrams: 54,
-      carbsGrams: 68,
-      fatGrams: 26,
-      notes: 'Estimated from Life OS Food Database',
-    });
-
-    // 5. Seed Finance Records (in exact integer minor units / cents)
-    await createFinanceRecord({
-      recordType: 'income',
-      title: 'Research Assistantship Stipend',
-      category: 'Income',
-      accountName: 'Main Checking',
-      amountMinor: 245000, // $2,450.00
-      date: todayDate,
-      isRecurring: true,
-    });
-    await createFinanceRecord({
-      recordType: 'expense',
-      title: 'Whole Foods Weekly Groceries',
-      category: 'Groceries',
-      accountName: 'Main Checking',
-      amountMinor: 8450, // $84.50
-      date: todayDate,
-    });
-    await createFinanceRecord({
-      recordType: 'budget',
-      title: 'Monthly Groceries & Nutrition Cap',
-      category: 'Groceries',
-      accountName: 'Main Checking',
-      amountMinor: 8450,
-      targetAmountMinor: 40000, // $400.00 budget
-      date: todayDate,
-    });
-    await createFinanceRecord({
-      recordType: 'savings_goal',
-      title: 'Emergency & Post-Grad Relocation Fund',
-      category: 'Savings',
-      accountName: 'High-Yield Vault',
-      amountMinor: 320000, // $3,200.00 saved
-      targetAmountMinor: 500000, // $5,000.00 target
-      date: todayDate,
-    });
-
-    // 6. Seed Knowledge Library
-    await createKnowledgeItem({
-      itemType: 'book',
-      title: 'Designing Data-Intensive Applications',
-      authorOrSource: 'Martin Kleppmann',
-      status: 'in_progress',
-      progressCurrent: 284,
-      progressTotal: 616,
-      progressUnit: 'pages',
-      rating: 5,
-      tags: 'distributed-systems · databases · cs304',
-      takeaways: 'Linearizability is a recency guarantee on single objects; serializability is an isolation property of multi-object transactions.',
-    });
-    await createKnowledgeItem({
-      itemType: 'podcast',
-      title: 'Huberman Lab: Optimizing Deep Work & Ultradian Cycles',
-      authorOrSource: 'Dr. Andrew Huberman',
-      status: 'completed',
-      progressCurrent: 90,
-      progressTotal: 90,
-      progressUnit: 'mins',
-      rating: 5,
-      tags: 'focus · health · chronobiology',
-      takeaways: 'Cap deep cognitive blocks at 90 minutes followed by 15 minutes of non-sleep deep rest or low-visual-load walking.',
-    });
-
-    // 7. Seed Goals, Habits, Quests & Rewards
-    await createGoalHabit({
-      recordType: 'goal',
-      title: 'Achieve First-Class Honours in Computer Science Term',
-      whyReason: 'Build strong theoretical foundation for systems engineering residency.',
-      status: 'active',
-      frequency: 'once',
-      progressPercent: 65,
-      streakCount: 12,
-      completedToday: false,
-      targetDate: '2026-12-20',
-      xpReward: 200,
-      coinCostOrReward: 100,
-      nextSmallAction: 'Complete CS304 Lecture 4 & 5 active recall flashcards today.',
-    });
-    await createGoalHabit({
-      recordType: 'habit',
-      title: '90-Minute Morning Deep Study Block Before Checking Messages',
-      whyReason: 'Protect peak cognitive energy for hardest academic modules.',
-      status: 'active',
-      frequency: 'daily',
-      progressPercent: 100,
-      streakCount: 9,
-      completedToday: true,
-      xpReward: 30,
-      coinCostOrReward: 15,
-    });
-    await createGoalHabit({
-      recordType: 'quest',
-      title: 'Weekly Consistency Quest: 4 Study Revisions + 3 Strength Workouts',
-      whyReason: 'Balanced academic and physical momentum without burnout.',
-      status: 'active',
-      frequency: 'weekly',
-      progressPercent: 75,
-      streakCount: 3,
-      completedToday: false,
-      xpReward: 150,
-      coinCostOrReward: 80,
-    });
-    await createGoalHabit({
-      recordType: 'reward',
-      title: 'Guilt-Free Specialty Coffee & Sci-Fi Reading Evening',
-      whyReason: 'Legitimate rest and recovery reward after consistent deep work.',
-      status: 'active',
-      frequency: 'once',
-      progressPercent: 100,
-      streakCount: 0,
-      completedToday: false,
-      xpReward: 0,
-      coinCostOrReward: 50,
-    });
-
-    // 8. Seed AI Action Log with a Pending Consequential Proposal
-    await logAiAction({
-      actionTitle: 'Propose Rebalancing Afternoon Study Block Around Asr Prayer',
-      toolName: 'rebalance_day_schedule',
-      permissionLevel: 'consequential',
-      status: 'pending_approval',
-      targetModule: 'Calendar & Study',
-      summary: 'Detected a 15-minute buffer overlap with Asr Prayer (15:15). Proposed shifting CS304 Revision Block to 13:30–14:30.',
-      payloadJson: JSON.stringify({
-        summary: 'Insert 60m CS304 Raft Revision at 13:30 with 15m rest buffer before Asr.',
-        blocks: [
-          {
-            title: 'AI Time-Block: CS304 Raft Active Recall',
-            startTime: '13:30',
-            endTime: '14:30',
-            eventType: 'study_block',
-          },
-        ],
-      }),
-    });
+    for (const t of tasks) {
+      await deleteDoc(doc(db, 'tasks', t.id)).catch(() => {});
+    }
+    for (const e of events) {
+      await deleteDoc(doc(db, 'calendar_events', e.id)).catch(() => {});
+    }
+    for (const h of healthLogs) {
+      await deleteDoc(doc(db, 'health_logs', h.id)).catch(() => {});
+    }
+    for (const f of financeRecords) {
+      await deleteDoc(doc(db, 'finance_records', f.id)).catch(() => {});
+    }
+    for (const k of knowledgeItems) {
+      await deleteDoc(doc(db, 'knowledge_items', k.id)).catch(() => {});
+    }
+    for (const g of goalsHabits) {
+      await deleteDoc(doc(db, 'goals_habits', g.id)).catch(() => {});
+    }
+    for (const a of aiLogs) {
+      await deleteDoc(doc(db, 'ai_action_logs', a.id)).catch(() => {});
+    }
+    for (const r of dailyReviews) {
+      await deleteDoc(doc(db, 'daily_reviews', r.id)).catch(() => {});
+    }
   };
 
   return (
@@ -1082,20 +1020,26 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         createCalendarEvent,
         deleteCalendarEvent,
         createStudyModule,
+        deleteStudyModule,
         createStudyItem,
+        deleteStudyItem,
         recordStudyFeedback,
         createHealthLog,
+        deleteHealthLog,
         createFinanceRecord,
         deleteFinanceRecord,
         createKnowledgeItem,
         updateKnowledgeProgress,
+        deleteKnowledgeItem,
         createGoalHabit,
         toggleHabitOrGoalCompletion,
+        deleteGoalHabit,
         redeemReward,
         logAiAction,
         resolveAiProposal,
+        deleteAiLog,
         saveDailyReview,
-        seedInitialWorkspaceIfEmpty,
+        clearAllWorkspaceData,
       }}
     >
       {children}

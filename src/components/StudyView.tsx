@@ -1,385 +1,625 @@
-import React, { useState } from 'react';
-import { BookOpen, Sparkles, Plus, Brain, CheckCircle2, HelpCircle } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
 import { useLifeOS } from '../context/LifeOSContext.tsx';
 import { StudyItemRecord } from '../types.ts';
+import {
+  FileText,
+  Plus,
+  X,
+  Trash2,
+} from 'lucide-react';
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  Tooltip,
+} from 'recharts';
 
-export const StudyView: React.FC = () => {
+interface StudyViewProps {
+  subPage?: string;
+  onSubPageChange?: (sub: string) => void;
+}
+
+export const StudyView: React.FC<StudyViewProps> = ({
+  subPage = 'modules',
+  onSubPageChange,
+}) => {
   const {
     studyModules,
     studyItems,
     todayDate,
     createStudyModule,
+    deleteStudyModule,
     createStudyItem,
+    deleteStudyItem,
     recordStudyFeedback,
+    createCalendarEvent,
   } = useLifeOS();
 
-  // New Module State
+  const [activeTab, setActiveTab] = useState<
+    'modules' | 'schedule_import' | 'exams' | 'flashcards' | 'analytics'
+  >(
+    (subPage as 'modules' | 'schedule_import' | 'exams' | 'flashcards' | 'analytics') ||
+      'modules'
+  );
+
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [aiSynthesisText, setAiSynthesisText] = useState<string | null>(null);
+  const [synthesizing, setSynthesizing] = useState(false);
+
+  // Modals
+  const [showNewModuleModal, setShowNewModuleModal] = useState(false);
+  const [showNewItemModal, setShowNewItemModal] = useState(false);
+  const [showRecallModal, setShowRecallModal] = useState(false);
+  const [recallIndex, setRecallIndex] = useState(0);
+  const [cardAnswerRevealed, setCardAnswerRevealed] = useState(false);
+
+  // New Module Form
   const [modCode, setModCode] = useState('');
   const [modTitle, setModTitle] = useState('');
-  const [modExamDate, setModExamDate] = useState('2026-12-18');
+  const [modTerm, setModTerm] = useState('Current Term');
+  const [modExamDate, setModExamDate] = useState(todayDate);
   const [modTotalLectures, setModTotalLectures] = useState(12);
 
-  // New Lecture / Study Item State
-  const [selectedModId, setSelectedModId] = useState('');
-  const [lectureTitle, setLectureTitle] = useState('');
-  const [lectureMinutes, setLectureMinutes] = useState(45);
-  const [rawNotesToSynthesize, setRawNotesToSynthesize] = useState('');
-  const [synthesizing, setSynthesizing] = useState(false);
-  const [synthesisOutput, setSynthesisOutput] = useState<{
-    sourceSummary: string;
-    additionalExplanation: string;
-    estimatedMinutes: number;
-    flashcards: { frontPrompt: string; backAnswer: string }[];
-  } | null>(null);
+  // New Lecture / Flashcard Form
+  const [itemModuleId, setItemModuleId] = useState('');
+  const [itemType, setItemType] = useState<StudyItemRecord['itemType']>('lecture');
+  const [itemTitle, setItemTitle] = useState('');
+  const [itemMinutes, setItemMinutes] = useState(45);
+  const [itemNotes, setItemNotes] = useState('');
+  const [itemFront, setItemFront] = useState('');
+  const [itemBack, setItemBack] = useState('');
 
-  // Active Recall Flashcard Quiz State
-  const [activeCard, setActiveCard] = useState<StudyItemRecord | null>(null);
-  const [revealAnswer, setRevealAnswer] = useState(false);
+  // Schedule Import state
+  const [importText, setImportText] = useState('');
+  const [importModuleId, setImportModuleId] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
 
-  const handleAddModule = async (e: React.FormEvent) => {
+  const switchTab = (
+    tab: 'modules' | 'schedule_import' | 'exams' | 'flashcards' | 'analytics'
+  ) => {
+    setActiveTab(tab);
+    if (onSubPageChange) onSubPageChange(tab);
+  };
+
+  const lectures = studyItems.filter((s) => s.itemType === 'lecture');
+  const flashcards = studyItems.filter((s) => s.itemType === 'flashcard');
+  const dueItems = studyItems.filter(
+    (s) => s.status === 'review_due' || s.nextReviewDate <= todayDate
+  );
+
+  const selectedItem =
+    studyItems.find((s) => s.id === selectedItemId) || lectures[0] || studyItems[0] || null;
+
+  const totalPlannedLectures = studyModules.reduce((acc, m) => acc + (m.totalLectures || 0), 0);
+  const totalCompletedLectures = studyModules.reduce(
+    (acc, m) => acc + (m.completedLectures || 0),
+    0
+  );
+  const coveragePct =
+    totalPlannedLectures > 0
+      ? Math.round((totalCompletedLectures / totalPlannedLectures) * 100)
+      : lectures.length > 0
+      ? Math.round(
+          (lectures.filter((l) => l.status !== 'unstudied').length / lectures.length) * 100
+        )
+      : 0;
+
+  const avgConfidence =
+    studyItems.length > 0
+      ? (
+          studyItems.reduce((acc, s) => acc + (s.confidenceRating || 3), 0) / studyItems.length
+        ).toFixed(1)
+      : '0.0';
+
+  // Next upcoming exam
+  const nextExamInfo = useMemo(() => {
+    if (studyModules.length === 0) return null;
+    const sorted = [...studyModules].sort((a, b) => a.examDate.localeCompare(b.examDate));
+    const next = sorted[0];
+    const diffMs = new Date(next.examDate).getTime() - new Date(todayDate).getTime();
+    const days = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+    return { module: next, days };
+  }, [studyModules, todayDate]);
+
+  // 14-day review forecast computed from studyItems.nextReviewDate
+  const forecastData = useMemo(() => {
+    const arr: { day: string; due: number }[] = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() + i);
+      const iso = d.toISOString().split('T')[0];
+      const count = studyItems.filter((s) => s.nextReviewDate === iso).length;
+      arr.push({ day: iso.slice(8, 10), due: count });
+    }
+    return arr;
+  }, [studyItems]);
+
+  const handleCreateModule = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modCode.trim() || !modTitle.trim()) return;
-    const id = await createStudyModule({
-      code: modCode.toUpperCase(),
-      title: modTitle,
-      term: 'Current Term',
-      examDate: modExamDate,
-      targetGrade: 'A',
-      totalLectures: Number(modTotalLectures) || 12,
+    if (!modTitle.trim()) return;
+    await createStudyModule({
+      code: modCode.trim() || 'MOD101',
+      title: modTitle.trim(),
+      term: modTerm.trim() || 'Current Term',
+      examDate: modExamDate || todayDate,
+      totalLectures: modTotalLectures,
       completedLectures: 0,
     });
-    if (id) setSelectedModId(id);
     setModCode('');
     setModTitle('');
+    setShowNewModuleModal(false);
   };
 
-  const handleAddLecture = async (e: React.FormEvent) => {
+  const handleCreateItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetModId = selectedModId || studyModules[0]?.id;
-    if (!targetModId || !lectureTitle.trim()) return;
-    const modObj = studyModules.find((m) => m.id === targetModId);
+    if (!itemTitle.trim()) return;
+    const targetMod =
+      studyModules.find((m) => m.id === itemModuleId) || studyModules[0];
 
     await createStudyItem({
-      moduleId: targetModId,
-      moduleCode: modObj?.code || 'MOD',
-      title: lectureTitle,
-      itemType: 'lecture',
+      moduleId: targetMod?.id || '',
+      moduleCode: targetMod?.code || 'GEN',
+      title: itemTitle.trim(),
+      itemType,
       status: 'unstudied',
       importance: 'high',
-      estimatedMinutes: Number(lectureMinutes) || 45,
+      estimatedMinutes: itemMinutes,
       confidenceRating: 3,
-      stabilityDays: 1,
       repetitionCount: 0,
       nextReviewDate: todayDate,
-      notes: rawNotesToSynthesize || undefined,
+      notes: itemNotes.trim() || undefined,
+      frontPrompt: itemFront.trim() || undefined,
+      backAnswer: itemBack.trim() || undefined,
     });
-    setLectureTitle('');
+    setItemTitle('');
+    setItemNotes('');
+    setItemFront('');
+    setItemBack('');
+    setShowNewItemModal(false);
   };
 
-  const handleRunAiStudySynthesis = async () => {
-    if (!rawNotesToSynthesize.trim()) return;
+  const handleSynthesizeSelected = async () => {
+    if (!selectedItem) return;
     setSynthesizing(true);
     try {
-      const targetMod = studyModules.find((m) => m.id === (selectedModId || studyModules[0]?.id));
       const res = await fetch('/api/ai/study-synthesis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          moduleCode: targetMod?.code || 'ACADEMIC',
-          lectureTitle: lectureTitle || 'Uploaded Lecture Notes',
-          rawContent: rawNotesToSynthesize,
+          moduleCode: selectedItem.moduleCode,
+          lectureTitle: selectedItem.title,
+          rawContent:
+            selectedItem.notes ||
+            selectedItem.backAnswer ||
+            `Study topic: ${selectedItem.title} in module ${selectedItem.moduleCode}`,
         }),
       });
       const data = await res.json();
-      if (data.sourceSummary) {
-        setSynthesisOutput(data);
+      setAiSynthesisText(data.sourceSummary || data.result || 'Synthesized summary.');
+
+      if (Array.isArray(data.flashcards)) {
+        for (const fc of data.flashcards) {
+          await createStudyItem({
+            moduleId: selectedItem.moduleId,
+            moduleCode: selectedItem.moduleCode,
+            title: fc.frontPrompt.slice(0, 120),
+            itemType: 'flashcard',
+            status: 'review_due',
+            importance: 'high',
+            estimatedMinutes: 5,
+            confidenceRating: 3,
+            repetitionCount: 0,
+            nextReviewDate: todayDate,
+            frontPrompt: fc.frontPrompt,
+            backAnswer: fc.backAnswer,
+          });
+        }
       }
-    } catch {
-      // Handled gracefully
     } finally {
       setSynthesizing(false);
     }
   };
 
-  const handleSaveGeneratedFlashcards = async () => {
-    if (!synthesisOutput) return;
-    const targetModId = selectedModId || studyModules[0]?.id;
-    if (!targetModId) return;
-    const modObj = studyModules.find((m) => m.id === targetModId);
+  const handleImportScheduleLines = async () => {
+    const lines = importText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return;
+    setImporting(true);
+    try {
+      const targetMod =
+        studyModules.find((m) => m.id === importModuleId) || studyModules[0];
+      let modId = targetMod?.id || '';
+      const modCodeStr = targetMod?.code || 'MOD';
 
-    for (const fc of synthesisOutput.flashcards) {
-      await createStudyItem({
-        moduleId: targetModId,
-        moduleCode: modObj?.code || 'MOD',
-        title: `Flashcard: ${fc.frontPrompt.slice(0, 60)}`,
-        itemType: 'flashcard',
-        status: 'review_due',
-        importance: 'high',
-        estimatedMinutes: 10,
-        confidenceRating: 3,
-        stabilityDays: 1,
-        repetitionCount: 0,
-        nextReviewDate: todayDate,
-        frontPrompt: fc.frontPrompt,
-        backAnswer: fc.backAnswer,
-        sourceRef: lectureTitle || 'Source-Grounded Extraction',
-      });
+      if (!modId) {
+        modId = await createStudyModule({
+          code: 'IMP101',
+          title: 'Imported Study Module',
+          term: 'Current Term',
+          examDate: todayDate,
+          totalLectures: lines.length,
+          completedLectures: 0,
+        });
+      }
+
+      for (const line of lines) {
+        await createStudyItem({
+          moduleId: modId,
+          moduleCode: modCodeStr,
+          title: line.slice(0, 180),
+          itemType: 'lecture',
+          status: 'unstudied',
+          importance: 'high',
+          estimatedMinutes: 45,
+          confidenceRating: 3,
+          repetitionCount: 0,
+          nextReviewDate: todayDate,
+        });
+      }
+      setImportSuccessMsg(`Imported ${lines.length} lectures into your Study workspace.`);
+      setImportText('');
+    } finally {
+      setImporting(false);
     }
-    setSynthesisOutput(null);
-    setRawNotesToSynthesize('');
   };
 
+  const recallDeck = flashcards.length > 0 ? flashcards : studyItems;
+  const currentRecallCard = recallDeck[recallIndex % Math.max(1, recallDeck.length)] || null;
+
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="space-y-5">
+      {/* Header + Sub-page Tabs */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-            Academic Study Planner & FSRS Spaced Repetition
-          </h1>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Coordinate lectures, active-recall flashcards, and exam countdowns. Spoon Feeder AI clearly separates source-grounded summaries from additional intuition.
+          <h1 className="text-2xl font-semibold text-[#E8EDE8]">Study</h1>
+          <p className="text-xs text-[#9AA79E] mt-1">
+            {studyModules.length} active modules · {lectures.length} lectures ·{' '}
+            {flashcards.length} flashcards
           </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center p-1 rounded-xl bg-[#222C27] border border-[#BDD3C1]/15 text-xs">
+            {(
+              [
+                { id: 'modules', label: 'Modules' },
+                { id: 'schedule_import', label: 'Schedule import' },
+                { id: 'exams', label: 'Exams' },
+                { id: 'flashcards', label: 'Flashcards' },
+                { id: 'analytics', label: 'Analytics' },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                onClick={() => switchTab(t.id)}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
+                  activeTab === t.id
+                    ? 'bg-[#9BB9A2] text-[#171E1B] font-semibold'
+                    : 'text-[#9AA79E] hover:text-[#E8EDE8]'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => setShowNewModuleModal(true)}
+            className="px-3.5 py-2 rounded-xl bg-[#2C3932] hover:bg-[#35453C] text-[#E8EDE8] text-xs font-medium"
+          >
+            + Module
+          </button>
+          <button
+            onClick={() => setShowNewItemModal(true)}
+            className="px-4 py-2 rounded-xl bg-[#9BB9A2] hover:bg-[#a9c5b0] text-[#171E1B] text-xs font-semibold transition-colors"
+          >
+            + Lecture / Card
+          </button>
         </div>
       </div>
 
-      {/* Academic Modules & Exam Readiness Forecast */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {studyModules.map((mod) => {
-          const pct =
-            mod.totalLectures > 0
-              ? Math.round((mod.completedLectures / mod.totalLectures) * 100)
-              : 0;
-          const daysUntilExam = Math.max(
-            0,
-            Math.ceil(
-              (new Date(mod.examDate).getTime() - new Date(todayDate).getTime()) /
-                (1000 * 60 * 60 * 24)
-            )
-          );
-          const remainingLectures = Math.max(0, mod.totalLectures - mod.completedLectures);
-          const workloadFits = daysUntilExam >= remainingLectures;
-
-          return (
-            <div
-              key={mod.id}
-              className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                  <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                    {mod.code}
-                  </span>
-                  <span className="font-mono tabular-nums">
-                    Exam: {mod.examDate} ({daysUntilExam}d left)
-                  </span>
-                </div>
-                <h3 className="mt-1.5 text-base font-semibold text-slate-900 dark:text-slate-100">
-                  {mod.title}
-                </h3>
-                <div className="mt-3 flex justify-between text-xs text-slate-500 font-mono tabular-nums">
-                  <span>
-                    Coverage: {mod.completedLectures}/{mod.totalLectures} lectures
-                  </span>
-                  <span>{pct}%</span>
-                </div>
-                <div className="mt-1.5 h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                  <div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
-                </div>
-              </div>
-
-              <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
-                Forecast:{' '}
-                <span
-                  className={
-                    workloadFits
-                      ? 'text-emerald-600 dark:text-emerald-400 font-medium'
-                      : 'text-amber-600 dark:text-amber-400 font-medium'
-                  }
-                >
-                  {workloadFits
-                    ? 'Remaining workload fits available calendar days'
-                    : 'Tight schedule — prioritize daily revisions'}
-                </span>
-              </div>
+      {/* TAB 1: MODULES */}
+      {activeTab === 'modules' && (
+        <div className="space-y-5">
+          {/* 4 KPI Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Coverage</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">{coveragePct}%</p>
+              <p className="text-xs text-[#9BB9A2] mt-1">
+                {totalCompletedLectures} of {totalPlannedLectures || lectures.length} lectures
+              </p>
             </div>
-          );
-        })}
-
-        {/* Add Module Card */}
-        <form
-          onSubmit={handleAddModule}
-          className="rounded-xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/50 dark:bg-slate-900/40 p-5 space-y-3"
-        >
-          <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-            <Plus className="w-3.5 h-3.5" /> Add Academic Module & Exam Date
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="text"
-              required
-              value={modCode}
-              onChange={(e) => setModCode(e.target.value)}
-              placeholder="Code (e.g. MATH202)"
-              className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100"
-            />
-            <input
-              type="date"
-              required
-              value={modExamDate}
-              onChange={(e) => setModExamDate(e.target.value)}
-              className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-mono text-slate-900 dark:text-slate-100"
-            />
-          </div>
-          <input
-            type="text"
-            required
-            value={modTitle}
-            onChange={(e) => setModTitle(e.target.value)}
-            placeholder="Module Title (e.g. Linear Algebra & Optimization)"
-            className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100"
-          />
-          <div className="flex items-center justify-between">
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={modTotalLectures}
-              onChange={(e) => setModTotalLectures(Number(e.target.value))}
-              className="w-24 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-mono text-slate-900 dark:text-slate-100"
-              title="Total Lectures"
-            />
-            <button
-              type="submit"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold"
-            >
-              Create Module
-            </button>
-          </div>
-        </form>
-      </div>
-
-      {/* Row 2: Spaced-Repetition Queue (FSRS) + AI Study Material Synthesizer */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left 7 Columns: FSRS Revision & Lecture Queue */}
-        <div className="lg:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                <Brain className="w-4 h-4 text-emerald-500" />
-                Spaced-Repetition & Lecture Queue
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Rate your recall confidence (1–5) after studying to dynamically calculate the next FSRS review interval.
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Avg recall confidence</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">{avgConfidence} / 5</p>
+              <p className="text-xs text-[#9BB9A2] mt-1">Across {studyItems.length} items</p>
+            </div>
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Revisions due</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">{dueItems.length}</p>
+              <p className="text-xs text-[#D8B26E] mt-1">Spaced-repetition queue</p>
+            </div>
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Next exam</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">
+                {nextExamInfo ? `${nextExamInfo.days} d` : '—'}
+              </p>
+              <p className="text-xs text-[#9AA79E] mt-1">
+                {nextExamInfo
+                  ? `${nextExamInfo.module.code} · ${nextExamInfo.module.examDate}`
+                  : 'Add a module with an exam date'}
               </p>
             </div>
           </div>
 
-          {studyItems.length === 0 ? (
-            <p className="py-8 text-center text-xs text-slate-500">
-              No lectures or flashcards yet. Add a lecture or synthesize study material on the right.
-            </p>
-          ) : (
-            <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
-              {studyItems.map((item) => {
-                const isDue = item.nextReviewDate <= todayDate;
+          {/* Active Modules Grid */}
+          {studyModules.length > 0 ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {studyModules.map((mod) => {
+                const modItems = studyItems.filter((s) => s.moduleId === mod.id);
+                const pct =
+                  mod.totalLectures > 0
+                    ? Math.round((mod.completedLectures / mod.totalLectures) * 100)
+                    : 0;
                 return (
-                  <div key={item.id} className="py-4 space-y-2">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div key={mod.id} className="sage-card p-5 space-y-3">
+                    <div className="flex items-start justify-between">
                       <div>
-                        <div className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                          [{item.moduleCode}] {item.title}
-                        </div>
-                        <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                          <span className="capitalize">{item.itemType}</span>
-                          <span aria-hidden="true"> · </span>
-                          <span
-                            className={
-                              isDue
-                                ? 'text-amber-600 dark:text-amber-400 font-medium'
-                                : 'text-emerald-600 dark:text-emerald-400'
-                            }
-                          >
-                            Next Review: {item.nextReviewDate}
-                          </span>
-                          <span aria-hidden="true"> · </span>
-                          <span className="font-mono tabular-nums">
-                            Stability: {item.stabilityDays || 1}d ({item.repetitionCount} reps)
-                          </span>
-                          {item.sourceRef && (
-                            <>
-                              <span aria-hidden="true"> · </span>
-                              <span>Source: {item.sourceRef}</span>
-                            </>
-                          )}
-                        </div>
+                        <h2 className="text-base font-semibold text-[#E8EDE8]">
+                          {mod.code} · {mod.title}
+                        </h2>
+                        <p className="text-xs text-[#9AA79E] mt-0.5">
+                          {mod.totalLectures} lectures · Exam {mod.examDate} · {mod.term}
+                        </p>
                       </div>
-
-                      {item.frontPrompt && (
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2]">
+                          {pct}%
+                        </span>
                         <button
-                          onClick={() => {
-                            setActiveCard(item);
-                            setRevealAnswer(false);
-                          }}
-                          className="px-3 py-1 rounded-lg border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-1 self-start sm:self-center shrink-0"
+                          onClick={() => deleteStudyModule(mod.id)}
+                          className="text-[#65756B] hover:text-[#D97A6C]"
+                          title="Delete module"
                         >
-                          <HelpCircle className="w-3.5 h-3.5 text-emerald-500" />
-                          Active Recall Quiz
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                      )}
+                      </div>
                     </div>
 
-                    {item.notes && (
-                      <p className="text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-950/60 p-2.5 rounded-lg">
-                        {item.notes}
-                      </p>
-                    )}
+                    <div className="w-full h-2 rounded-full bg-[#171E1B] overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-[#9BB9A2]"
+                        style={{ width: `${Math.min(100, pct)}%` }}
+                      />
+                    </div>
 
-                    {/* Quick Recall Rating Buttons */}
-                    <div className="flex flex-wrap items-center gap-2 pt-1">
-                      <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">
-                        Log Recall Quality:
+                    <div className="flex items-center justify-between text-xs text-[#9AA79E]">
+                      <span>
+                        {mod.completedLectures} / {mod.totalLectures} done
                       </span>
-                      {[
-                        { r: 1, label: '1 · Forgot (1d)' },
-                        { r: 2, label: '2 · Hard (1.2x)' },
-                        { r: 3, label: '3 · Good (2.2x)' },
-                        { r: 4, label: '4 · Strong (3.2x)' },
-                        { r: 5, label: '5 · Mastered (4.5x)' },
-                      ].map((btn) => (
-                        <button
-                          key={btn.r}
-                          onClick={() => recordStudyFeedback(item, btn.r, item.estimatedMinutes)}
-                          className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-700 dark:text-slate-300 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition-colors"
-                        >
-                          {btn.label}
-                        </button>
-                      ))}
+                      <span>{modItems.length} items</span>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          setItemModuleId(mod.id);
+                          setShowNewItemModal(true);
+                        }}
+                        className="px-3.5 py-1.5 rounded-lg bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold"
+                      >
+                        + Add lecture
+                      </button>
+                      <button
+                        onClick={() => setShowRecallModal(true)}
+                        className="px-3 py-1.5 rounded-lg bg-[#2C3932] text-[#E8EDE8] text-xs"
+                      >
+                        Practice recall
+                      </button>
                     </div>
                   </div>
                 );
               })}
             </div>
+          ) : (
+            <div className="sage-card p-8 text-center space-y-3">
+              <p className="text-sm font-semibold text-[#E8EDE8]">No study modules created yet</p>
+              <p className="text-xs text-[#9AA79E]">
+                Create your first academic module to track lectures, spaced repetition, and exam
+                readiness.
+              </p>
+              <button
+                onClick={() => setShowNewModuleModal(true)}
+                className="px-4 py-2 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold"
+              >
+                + Create first module
+              </button>
+            </div>
+          )}
+
+          {/* Split Lecture List + Detail Inspector */}
+          {studyItems.length > 0 && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+              <div className="lg:col-span-5 sage-card p-4 space-y-2">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-[#E8EDE8]">
+                    Study items ({studyItems.length})
+                  </h3>
+                  <button
+                    onClick={() => setShowNewItemModal(true)}
+                    className="text-[11px] text-[#9BB9A2] hover:underline"
+                  >
+                    + New
+                  </button>
+                </div>
+
+                {studyItems.map((item, idx) => {
+                  const isSelected = selectedItem?.id === item.id;
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => {
+                        setSelectedItemId(item.id);
+                        setAiSynthesisText(null);
+                      }}
+                      className={`p-3 rounded-xl flex items-center justify-between cursor-pointer transition-all ${
+                        isSelected
+                          ? 'bg-[#2C3932] border border-[#9BB9A2]/50'
+                          : 'bg-[#1C2520]/60 border border-[#BDD3C1]/8 hover:bg-[#2C3932]/50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="text-xs font-mono font-bold text-[#9BB9A2]">
+                          {String(idx + 1).padStart(2, '0')}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-[#E8EDE8] truncate">
+                            {item.title}
+                          </p>
+                          <p className="text-[10px] text-[#9AA79E]">
+                            {item.moduleCode} · {item.itemType} · {item.estimatedMinutes}m
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2] capitalize">
+                          {item.status.replace('_', ' ')}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteStudyItem(item.id);
+                          }}
+                          className="text-[#65756B] hover:text-[#D97A6C]"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {selectedItem && (
+                <div className="lg:col-span-7 sage-card p-5 space-y-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-semibold text-[#E8EDE8]">
+                        {selectedItem.title}
+                      </h3>
+                      <p className="text-xs text-[#9AA79E] mt-0.5">
+                        Module: {selectedItem.moduleCode} · Next review:{' '}
+                        {selectedItem.nextReviewDate} · Reps: {selectedItem.repetitionCount}
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2] uppercase">
+                      {selectedItem.itemType}
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-[#2C3932]/75 border border-[#BDD3C1]/15 space-y-2.5">
+                    <span className="text-xs font-semibold text-[#E8EDE8]">
+                      Source notes &amp; AI synthesis
+                    </span>
+                    <p className="text-xs text-[#E8EDE8]/90 leading-relaxed whitespace-pre-wrap">
+                      {selectedItem.notes ||
+                        selectedItem.backAnswer ||
+                        'No notes added yet. Click "Synthesize & create flashcards" to generate study points.'}
+                    </p>
+
+                    {aiSynthesisText && (
+                      <div className="mt-3 pt-3 border-t border-[#BDD3C1]/15 text-xs text-[#9BB9A2]">
+                        {aiSynthesisText}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2 pt-2">
+                      <button
+                        onClick={handleSynthesizeSelected}
+                        disabled={synthesizing}
+                        className="px-3.5 py-1.5 rounded-lg bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold"
+                      >
+                        {synthesizing
+                          ? 'Synthesizing...'
+                          : 'Synthesize & create flashcards'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Spaced Repetition Rating */}
+                  <div className="pt-2 border-t border-[#BDD3C1]/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="text-xs text-[#9AA79E]">
+                      <p className="font-semibold text-[#E8EDE8] mb-0.5">
+                        Rate recall to schedule next FSRS review
+                      </p>
+                      <p>
+                        Current confidence: {selectedItem.confidenceRating}/5 · Stability:{' '}
+                        {selectedItem.stabilityDays || 1}d
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {(
+                        [
+                          { label: 'Again', rating: 1 },
+                          { label: 'Hard', rating: 2 },
+                          { label: 'Good', rating: 4 },
+                          { label: 'Easy', rating: 5 },
+                        ] as const
+                      ).map((r) => (
+                        <button
+                          key={r.label}
+                          onClick={() =>
+                            recordStudyFeedback(
+                              selectedItem,
+                              r.rating,
+                              selectedItem.estimatedMinutes || 30
+                            )
+                          }
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
+                            r.label === 'Good'
+                              ? 'bg-[#9BB9A2] text-[#171E1B] font-semibold'
+                              : 'bg-[#2C3932] text-[#E8EDE8] hover:bg-[#35453C]'
+                          }`}
+                        >
+                          {r.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
+      )}
 
-        {/* Right 5 Columns: Add Lecture & Source-Grounded AI Synthesizer */}
-        <div className="lg:col-span-5 space-y-6">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-emerald-500" />
-              Add Lecture & AI Source-Grounded Synthesis
-            </h2>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Paste syllabus topics or lecture notes to extract flashcards and schedule revisions.
-            </p>
+      {/* TAB 2: SCHEDULE IMPORT */}
+      {activeTab === 'schedule_import' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <div className="lg:col-span-5 sage-card p-5 space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold text-[#E8EDE8]">
+                1. Paste or import lecture list
+              </h2>
+              <p className="text-xs text-[#9AA79E] mt-0.5">
+                Enter one lecture topic per line to batch-create study items
+              </p>
+            </div>
 
-            <form onSubmit={handleAddLecture} className="mt-4 space-y-3">
-              <div className="grid grid-cols-2 gap-2">
+            {studyModules.length > 0 && (
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Target Module</label>
                 <select
-                  value={selectedModId}
-                  onChange={(e) => setSelectedModId(e.target.value)}
-                  className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-slate-100"
+                  value={importModuleId}
+                  onChange={(e) => setImportModuleId(e.target.value)}
+                  className="w-full sage-input px-3 py-2 text-xs"
                 >
                   {studyModules.map((m) => (
                     <option key={m.id} value={m.id}>
@@ -387,167 +627,582 @@ export const StudyView: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <input
-                  type="number"
-                  min={10}
-                  max={240}
-                  value={lectureMinutes}
-                  onChange={(e) => setLectureMinutes(Number(e.target.value))}
-                  placeholder="Est. Minutes"
-                  className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100"
-                />
               </div>
+            )}
 
-              <input
-                type="text"
-                required
-                value={lectureTitle}
-                onChange={(e) => setLectureTitle(e.target.value)}
-                placeholder="Lecture Title (e.g., Lecture 6: Paxos & Multi-Paxos)"
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-slate-100"
-              />
+            <textarea
+              rows={7}
+              value={importText}
+              onChange={(e) => setImportText(e.target.value)}
+              placeholder={'Lecture 01: Introduction\nLecture 02: Core Mechanisms\nLecture 03: Clinical Applications'}
+              className="w-full sage-input p-3.5 text-xs"
+            />
 
-              <textarea
-                rows={4}
-                value={rawNotesToSynthesize}
-                onChange={(e) => setRawNotesToSynthesize(e.target.value)}
-                placeholder="Paste lecture transcript, PDF excerpt, or study notes here..."
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 text-xs text-slate-900 dark:text-slate-100"
-              />
+            {importSuccessMsg && (
+              <p className="text-xs text-[#9BB9A2]">{importSuccessMsg}</p>
+            )}
 
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={handleRunAiStudySynthesis}
-                  disabled={synthesizing || !rawNotesToSynthesize.trim()}
-                  className="px-3 py-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-semibold flex items-center gap-1.5 hover:bg-emerald-500/20 disabled:opacity-50"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  {synthesizing ? 'Extracting...' : 'AI Summarize & Generate Flashcards'}
-                </button>
+            <button
+              onClick={handleImportScheduleLines}
+              disabled={importing || !importText.trim()}
+              className="w-full py-2.5 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold disabled:opacity-50"
+            >
+              {importing ? 'Importing...' : 'Confirm & create lectures'}
+            </button>
+          </div>
 
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold"
-                >
-                  Save Lecture
-                </button>
-              </div>
-            </form>
-
-            {/* AI Synthesis Preview (Source-Grounded vs Additional Intuition) */}
-            {synthesisOutput && (
-              <div className="mt-6 pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
-                <div>
-                  <div className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                    Source-Grounded Summary (Directly from your notes)
-                  </div>
-                  <p className="mt-1 text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-                    {synthesisOutput.sourceSummary}
-                  </p>
-                </div>
-
-                <div>
-                  <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                    Additional AI Explanation (External context)
-                  </div>
-                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                    {synthesisOutput.additionalExplanation}
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                    Generated Active-Recall Flashcards ({synthesisOutput.flashcards.length})
-                  </div>
-                  {synthesisOutput.flashcards.map((fc, i) => (
+          <div className="lg:col-span-7 sage-card p-5">
+            <h2 className="text-sm font-semibold text-[#E8EDE8] mb-3">
+              2. Preview lines to import
+            </h2>
+            {importText.trim() ? (
+              <div className="space-y-2">
+                {importText
+                  .split('\n')
+                  .map((l) => l.trim())
+                  .filter(Boolean)
+                  .map((line, idx) => (
                     <div
-                      key={i}
-                      className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs space-y-1"
+                      key={idx}
+                      className="p-3 rounded-xl bg-[#2C3932]/75 flex items-center justify-between text-xs"
                     >
-                      <div className="font-medium text-slate-900 dark:text-slate-100">
-                        Q: {fc.frontPrompt}
-                      </div>
-                      <div className="text-slate-500 dark:text-slate-400">A: {fc.backAnswer}</div>
+                      <span className="text-[#E8EDE8] font-medium">{line}</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#9BB9A2]/20 text-[#9BB9A2]">
+                        Ready
+                      </span>
                     </div>
                   ))}
-                  <button
-                    onClick={handleSaveGeneratedFlashcards}
-                    className="w-full py-2 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-500 flex items-center justify-center gap-1.5"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Confirm & Add Flashcards to FSRS Queue
-                  </button>
-                </div>
+              </div>
+            ) : (
+              <div className="py-12 text-center text-xs text-[#65756B]">
+                <FileText className="w-7 h-7 text-[#9BB9A2] mx-auto mb-2 opacity-60" />
+                Paste lecture titles on the left to preview extracted items before saving.
               </div>
             )}
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Active Recall Quiz Modal */}
-      {activeCard && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl space-y-4">
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>Active Recall Verification · {activeCard.moduleCode}</span>
-              <span>Source: {activeCard.sourceRef || 'Lecture Notes'}</span>
+      {/* TAB 3: EXAMS */}
+      {activeTab === 'exams' && (
+        <div className="space-y-5">
+          {studyModules.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {studyModules.map((mod) => {
+                const pct =
+                  mod.totalLectures > 0
+                    ? Math.round((mod.completedLectures / mod.totalLectures) * 100)
+                    : 0;
+                const diffDays = Math.max(
+                  0,
+                  Math.ceil(
+                    (new Date(mod.examDate).getTime() - new Date(todayDate).getTime()) /
+                      (1000 * 60 * 60 * 24)
+                  )
+                );
+                return (
+                  <div key={mod.id} className="sage-card p-5 space-y-4">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-[#E8EDE8]">
+                          {mod.code} — {mod.title}
+                        </h3>
+                        <p className="text-[11px] text-[#9AA79E] mt-0.5">
+                          Exam date: {mod.examDate}
+                        </p>
+                      </div>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2]">
+                        {diffDays} days
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      <div className="w-16 h-16 rounded-full border-4 border-[#9BB9A2] flex flex-col items-center justify-center shrink-0">
+                        <span className="text-sm font-bold text-[#E8EDE8]">{pct}%</span>
+                        <span className="text-[9px] text-[#9AA79E]">Ready</span>
+                      </div>
+                      <div className="text-xs space-y-1 text-[#9AA79E]">
+                        <p>
+                          Coverage:{' '}
+                          <span className="text-[#E8EDE8]">
+                            {mod.completedLectures} / {mod.totalLectures} lectures
+                          </span>
+                        </p>
+                        <p>
+                          Term: <span className="text-[#E8EDE8]">{mod.term}</span>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+          ) : (
+            <div className="sage-card p-8 text-center text-xs text-[#9AA79E]">
+              Add a module with an exam date to track exam readiness and countdowns.
+            </div>
+          )}
+        </div>
+      )}
 
-            <div className="py-4">
-              <div className="text-xs uppercase tracking-wider text-slate-400 mb-1">Question</div>
-              <div className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                {activeCard.frontPrompt}
+      {/* TAB 4: FLASHCARDS */}
+      {activeTab === 'flashcards' && (
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Due today</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">{dueItems.length}</p>
+            </div>
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Flashcards</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">{flashcards.length}</p>
+            </div>
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Mastered</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">
+                {studyItems.filter((s) => s.status === 'mastered').length}
+              </p>
+            </div>
+            <div className="sage-card p-4">
+              <p className="text-xs text-[#9AA79E]">Total study items</p>
+              <p className="text-2xl font-bold text-[#E8EDE8] mt-1">{studyItems.length}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <div className="lg:col-span-6 sage-card p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-[#E8EDE8]">Flashcard queue</h3>
+                {studyItems.length > 0 && (
+                  <button
+                    onClick={() => setShowRecallModal(true)}
+                    className="px-3 py-1 rounded-lg bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold"
+                  >
+                    Start active recall
+                  </button>
+                )}
               </div>
 
-              {revealAnswer ? (
-                <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
-                  <div className="text-xs uppercase tracking-wider text-emerald-500 mb-1">
-                    Source-Grounded Answer
+              {flashcards.length > 0 ? (
+                flashcards.map((fc) => (
+                  <div
+                    key={fc.id}
+                    onClick={() => setShowRecallModal(true)}
+                    className="p-3.5 rounded-xl bg-[#2C3932]/80 border border-[#BDD3C1]/12 hover:border-[#9BB9A2]/40 flex items-center justify-between cursor-pointer"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-[#E8EDE8] truncate">
+                        {fc.frontPrompt || fc.title}
+                      </p>
+                      <p className="text-[11px] text-[#9AA79E]">
+                        {fc.moduleCode} · Next review: {fc.nextReviewDate}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteStudyItem(fc.id);
+                      }}
+                      className="text-[#65756B] hover:text-[#D97A6C] ml-2"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
-                  <div className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
-                    {activeCard.backAnswer}
-                  </div>
-                </div>
+                ))
               ) : (
-                <button
-                  onClick={() => setRevealAnswer(true)}
-                  className="mt-6 w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
-                >
-                  Reveal Answer
-                </button>
+                <p className="text-xs text-[#9AA79E] py-6 text-center">
+                  No flashcards yet. Click &ldquo;+ Lecture / Card&rdquo; or synthesize a lecture to
+                  generate cards.
+                </p>
               )}
             </div>
 
-            {revealAnswer && (
-              <div className="space-y-2">
-                <div className="text-xs text-slate-500">
-                  Rate recall to schedule next FSRS revision:
-                </div>
-                <div className="grid grid-cols-5 gap-2">
-                  {[1, 2, 3, 4, 5].map((r) => (
-                    <button
-                      key={r}
-                      onClick={async () => {
-                        await recordStudyFeedback(activeCard, r, 15);
-                        setActiveCard(null);
+            <div className="lg:col-span-6 sage-card p-5">
+              <h3 className="text-sm font-semibold text-[#E8EDE8] mb-3">
+                14-day review forecast
+              </h3>
+              <div className="h-44">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={forecastData}>
+                    <XAxis
+                      dataKey="day"
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#65756B', fontSize: 10 }}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#171E1B',
+                        borderColor: 'rgba(189,211,193,0.2)',
+                        borderRadius: '8px',
+                        fontSize: '11px',
                       }}
-                      className="py-2 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-mono font-semibold hover:bg-emerald-600 dark:hover:bg-emerald-500 dark:hover:text-white transition-colors"
+                    />
+                    <Bar dataKey="due" fill="#9BB9A2" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: ANALYTICS */}
+      {activeTab === 'analytics' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <div className="lg:col-span-6 sage-card p-5 space-y-3">
+            <h3 className="text-sm font-semibold text-[#E8EDE8]">
+              Low-confidence topics (Confidence ≤ 3)
+            </h3>
+            {studyItems.filter((s) => s.confidenceRating <= 3).length > 0 ? (
+              studyItems
+                .filter((s) => s.confidenceRating <= 3)
+                .map((w) => (
+                  <div
+                    key={w.id}
+                    className="p-3 rounded-xl bg-[#2C3932]/75 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div>
+                      <p className="font-semibold text-[#E8EDE8]">{w.title}</p>
+                      <p className="text-[11px] text-[#D8B26E]">
+                        Confidence {w.confidenceRating} / 5 · {w.moduleCode}
+                      </p>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        await createCalendarEvent({
+                          title: `Revision: ${w.title}`,
+                          eventType: 'study_block',
+                          date: todayDate,
+                          startTime: '16:00',
+                          endTime: '16:45',
+                          isProtectedAnchor: false,
+                        });
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-[#9BB9A2] text-[#171E1B] text-[11px] font-semibold shrink-0"
                     >
-                      Rating {r}
+                      Schedule 45m
+                    </button>
+                  </div>
+                ))
+            ) : (
+              <p className="text-xs text-[#9AA79E] py-4">
+                No weak topics flagged right now.
+              </p>
+            )}
+          </div>
+
+          <div className="lg:col-span-6 sage-card p-5 space-y-3">
+            <h3 className="text-sm font-semibold text-[#E8EDE8]">Study summary</h3>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between py-2 border-b border-[#BDD3C1]/10">
+                <span className="text-[#9AA79E]">Active modules</span>
+                <span className="text-[#E8EDE8] font-semibold">{studyModules.length}</span>
+              </div>
+              <div className="flex justify-between py-2 border-b border-[#BDD3C1]/10">
+                <span className="text-[#9AA79E]">Lectures tracked</span>
+                <span className="text-[#E8EDE8] font-semibold">{lectures.length}</span>
+              </div>
+              <div className="flex justify-between py-2 border-b border-[#BDD3C1]/10">
+                <span className="text-[#9AA79E]">Flashcards tracked</span>
+                <span className="text-[#E8EDE8] font-semibold">{flashcards.length}</span>
+              </div>
+              <div className="flex justify-between py-2">
+                <span className="text-[#9AA79E]">Average confidence rating</span>
+                <span className="text-[#9BB9A2] font-semibold">{avgConfidence} / 5</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Module Modal */}
+      {showNewModuleModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handleCreateModule}
+            className="w-full max-w-md rounded-2xl bg-[#222C27] border border-[#BDD3C1]/25 p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-[#E8EDE8]">New Study Module</h3>
+              <button
+                type="button"
+                onClick={() => setShowNewModuleModal(false)}
+                className="text-[#9AA79E]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Code</label>
+                <input
+                  type="text"
+                  required
+                  value={modCode}
+                  onChange={(e) => setModCode(e.target.value)}
+                  placeholder="OPHTH"
+                  className="w-full sage-input px-3 py-2 text-xs"
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs text-[#9AA79E] mb-1">Title</label>
+                <input
+                  type="text"
+                  required
+                  value={modTitle}
+                  onChange={(e) => setModTitle(e.target.value)}
+                  placeholder="Module title..."
+                  className="w-full sage-input px-3 py-2 text-xs"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Term</label>
+                <input
+                  type="text"
+                  value={modTerm}
+                  onChange={(e) => setModTerm(e.target.value)}
+                  className="w-full sage-input px-3 py-2 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Exam Date</label>
+                <input
+                  type="date"
+                  value={modExamDate}
+                  onChange={(e) => setModExamDate(e.target.value)}
+                  className="w-full sage-input px-3 py-2 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Total Lectures</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={modTotalLectures}
+                  onChange={(e) => setModTotalLectures(Number(e.target.value))}
+                  className="w-full sage-input px-3 py-2 text-xs"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowNewModuleModal(false)}
+                className="px-4 py-2 rounded-xl bg-[#2C3932] text-xs text-[#9AA79E]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold"
+              >
+                Create module
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* New Study Item Modal */}
+      {showNewItemModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handleCreateItem}
+            className="w-full max-w-md rounded-2xl bg-[#222C27] border border-[#BDD3C1]/25 p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-[#E8EDE8]">
+                Add Lecture or Flashcard
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowNewItemModal(false)}
+                className="text-[#9AA79E]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Type</label>
+                <select
+                  value={itemType}
+                  onChange={(e) =>
+                    setItemType(e.target.value as StudyItemRecord['itemType'])
+                  }
+                  className="w-full sage-input px-3 py-2 text-xs"
+                >
+                  <option value="lecture">Lecture</option>
+                  <option value="flashcard">Flashcard</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Est. Minutes</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={600}
+                  value={itemMinutes}
+                  onChange={(e) => setItemMinutes(Number(e.target.value))}
+                  className="w-full sage-input px-3 py-2 text-xs"
+                />
+              </div>
+            </div>
+            {studyModules.length > 0 && (
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Module</label>
+                <select
+                  value={itemModuleId}
+                  onChange={(e) => setItemModuleId(e.target.value)}
+                  className="w-full sage-input px-3 py-2 text-xs"
+                >
+                  {studyModules.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.code} — {m.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs text-[#9AA79E] mb-1">Title / Prompt</label>
+              <input
+                type="text"
+                required
+                value={itemTitle}
+                onChange={(e) => setItemTitle(e.target.value)}
+                placeholder="Topic title or flashcard question..."
+                className="w-full sage-input px-3 py-2 text-xs"
+              />
+            </div>
+            {itemType === 'flashcard' ? (
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">Back Answer</label>
+                <textarea
+                  rows={3}
+                  value={itemBack}
+                  onChange={(e) => setItemBack(e.target.value)}
+                  placeholder="Grounded answer..."
+                  className="w-full sage-input p-3 text-xs"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs text-[#9AA79E] mb-1">
+                  Lecture Notes (for AI synthesis)
+                </label>
+                <textarea
+                  rows={3}
+                  value={itemNotes}
+                  onChange={(e) => setItemNotes(e.target.value)}
+                  placeholder="Paste lecture notes or key takeaways..."
+                  className="w-full sage-input p-3 text-xs"
+                />
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowNewItemModal(false)}
+                className="px-4 py-2 rounded-xl bg-[#2C3932] text-xs text-[#9AA79E]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold"
+              >
+                Save item
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Active Recall Session Modal */}
+      {showRecallModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-xl rounded-2xl bg-[#222C27] border border-[#BDD3C1]/25 p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-[#E8EDE8]">Active recall session</h2>
+                <p className="text-xs text-[#9AA79E]">
+                  {recallDeck.length > 0
+                    ? `Item ${(recallIndex % recallDeck.length) + 1} of ${recallDeck.length}`
+                    : 'No items in deck'}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowRecallModal(false)}
+                className="p-1.5 rounded-lg text-[#9AA79E] hover:text-[#E8EDE8]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {currentRecallCard ? (
+              <div className="rounded-2xl bg-[#1C2520] border border-[#BDD3C1]/15 p-5 space-y-4">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2]">
+                  {currentRecallCard.moduleCode} · {currentRecallCard.itemType.toUpperCase()}
+                </span>
+                <h3 className="text-sm font-semibold text-[#E8EDE8]">
+                  {currentRecallCard.frontPrompt || currentRecallCard.title}
+                </h3>
+
+                {cardAnswerRevealed ? (
+                  <div className="p-4 rounded-xl bg-[#2C3932] border border-[#9BB9A2]/30 space-y-2 text-xs text-[#E8EDE8]">
+                    <p className="text-[10px] font-semibold uppercase text-[#9BB9A2]">ANSWER</p>
+                    <p>
+                      {currentRecallCard.backAnswer ||
+                        currentRecallCard.notes ||
+                        'Review completed.'}
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setCardAnswerRevealed(true)}
+                    className="w-full py-6 rounded-xl bg-[#2C3932]/60 border border-dashed border-[#BDD3C1]/25 text-xs text-[#9BB9A2] font-semibold"
+                  >
+                    Click to reveal answer
+                  </button>
+                )}
+
+                <div className="grid grid-cols-4 gap-2 pt-2">
+                  {(
+                    [
+                      { label: 'Again', rating: 1 },
+                      { label: 'Hard', rating: 2 },
+                      { label: 'Good', rating: 4 },
+                      { label: 'Easy', rating: 5 },
+                    ] as const
+                  ).map((b) => (
+                    <button
+                      key={b.label}
+                      onClick={async () => {
+                        await recordStudyFeedback(currentRecallCard, b.rating, 15);
+                        setCardAnswerRevealed(false);
+                        setRecallIndex((i) => i + 1);
+                      }}
+                      className={`py-2 rounded-xl text-xs font-semibold ${
+                        b.label === 'Good'
+                          ? 'bg-[#9BB9A2] text-[#171E1B]'
+                          : 'bg-[#2C3932] text-[#E8EDE8]'
+                      }`}
+                    >
+                      {b.label}
                     </button>
                   ))}
                 </div>
               </div>
+            ) : (
+              <p className="text-xs text-[#9AA79E] text-center py-6">
+                Add flashcards or lectures first to start an active recall session.
+              </p>
             )}
-
-            <div className="flex justify-end">
-              <button
-                onClick={() => setActiveCard(null)}
-                className="text-xs text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-              >
-                Close
-              </button>
-            </div>
           </div>
         </div>
       )}
