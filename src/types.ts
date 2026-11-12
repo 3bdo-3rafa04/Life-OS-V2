@@ -2,6 +2,7 @@ export type NavDestination =
   | 'overview'
   | 'calendar'
   | 'tasks'
+  | 'pomodoro'
   | 'study'
   | 'library'
   | 'health'
@@ -16,6 +17,7 @@ export type SubPageMap = {
   overview: 'dashboard';
   calendar: 'week' | 'day_month' | 'agenda';
   tasks: 'board' | 'list';
+  pomodoro: 'timer' | 'analytics' | 'history';
   study: 'modules' | 'exams' | 'flashcards' | 'schedule_import' | 'analytics';
   library: 'books' | 'courses' | 'podcasts';
   health: 'measurements' | 'workouts' | 'nutrition' | 'sleep_water';
@@ -26,6 +28,61 @@ export type SubPageMap = {
   spoon_feeder: 'workspace';
   settings: 'permissions';
 };
+
+export type PomodoroMode = 'focus' | 'short_break' | 'long_break';
+
+export type PomodoroCategory =
+  | 'Deep Study'
+  | 'Active Recall'
+  | 'Lecture Review'
+  | 'Exam Practice'
+  | 'Problem Solving'
+  | 'Reading & Notes';
+
+export interface PomodoroSessionRecord {
+  id: string;
+  date: string;
+  durationMinutes: number;
+  mode: PomodoroMode;
+  category: PomodoroCategory;
+  moduleId?: string;
+  moduleCode?: string;
+  taskId?: string;
+  taskTitle?: string;
+  studyItemId?: string;
+  studyItemTitle?: string;
+  notes?: string;
+  completedAt: string;
+  firestoreLogId?: string;
+}
+
+export interface PomodoroTimerState {
+  running: boolean;
+  mode: PomodoroMode;
+  category: PomodoroCategory;
+  totalDurationSeconds: number;
+  remainingSeconds: number;
+  elapsedFocusSeconds: number;
+  sessionNumber: number;
+  focusMinutesPreset: number;
+  shortBreakMinutesPreset: number;
+  longBreakMinutesPreset: number;
+  autoStartBreaks: boolean;
+  autoStartFocus: boolean;
+  soundEnabled: boolean;
+  browserNotificationsEnabled: boolean;
+  linkedModuleId: string;
+  linkedStudyItemId: string;
+  linkedTaskId: string;
+  customLabel: string;
+  liveAlert: {
+    id: string;
+    title: string;
+    message: string;
+    timestamp: string;
+    mode: PomodoroMode;
+  } | null;
+}
 
 export interface UserProfile {
   uid: string;

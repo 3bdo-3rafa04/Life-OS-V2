@@ -10,6 +10,8 @@ export const AnalyticsView: React.FC = () => {
     financeRecords,
     goalsHabits,
     dailyReviews,
+    pomodoroSessions,
+    pomodoroState,
     saveDailyReview,
   } = useLifeOS();
 
@@ -41,10 +43,13 @@ export const AnalyticsView: React.FC = () => {
   const completionRate =
     tasks.length > 0 ? Math.round((completedTasks.length / tasks.length) * 100) : 0;
 
-  const totalFocusMinutes = completedTasks.reduce(
-    (sum, t) => sum + (t.actualMinutes || t.estimatedMinutes || 0),
-    0
-  );
+  const liveActiveMins =
+    pomodoroState.mode === 'focus' ? Math.floor(pomodoroState.elapsedFocusSeconds / 60) : 0;
+
+  const totalFocusMinutes =
+    pomodoroSessions
+      .filter((s) => s.mode === 'focus')
+      .reduce((sum, s) => sum + s.durationMinutes, 0) + liveActiveMins;
   const totalFocusHours = +(totalFocusMinutes / 60).toFixed(1);
 
   const workoutLogs = healthLogs.filter((h) => h.logType === 'workout');
@@ -55,7 +60,7 @@ export const AnalyticsView: React.FC = () => {
       .filter((f) => f.recordType === 'expense')
       .reduce((s, f) => s + (f.amountMinor || 0), 0) / 100;
 
-  // Last 7 days breakdown
+  // Last 7 days breakdown (Study Hours driven strictly by Pomodoro sessions)
   const last7Days = useMemo(() => {
     const days: {
       dateStr: string;
@@ -78,9 +83,14 @@ export const AnalyticsView: React.FC = () => {
       const plannedHrs = +(
         dayTasks.reduce((s, t) => s + (t.estimatedMinutes || 0), 0) / 60
       ).toFixed(1);
-      const completedHrs = +(
-        dayDone.reduce((s, t) => s + (t.actualMinutes || t.estimatedMinutes || 0), 0) / 60
-      ).toFixed(1);
+
+      const dayPomodoroMins =
+        pomodoroSessions
+          .filter((s) => s.date === dateStr && s.mode === 'focus')
+          .reduce((sum, s) => sum + s.durationMinutes, 0) +
+        (dateStr === todayStr ? liveActiveMins : 0);
+
+      const completedHrs = +(dayPomodoroMins / 60).toFixed(1);
 
       const dayWorkoutMins = healthLogs
         .filter((h) => h.logType === 'workout' && h.date.startsWith(dateStr))
@@ -102,7 +112,7 @@ export const AnalyticsView: React.FC = () => {
       });
     }
     return days;
-  }, [tasks, healthLogs, financeRecords]);
+  }, [tasks, healthLogs, financeRecords, pomodoroSessions, todayStr, liveActiveMins]);
 
   // Last 28 days consistency grid
   const last28Days = useMemo(() => {

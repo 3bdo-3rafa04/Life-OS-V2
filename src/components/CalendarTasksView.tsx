@@ -1,11 +1,22 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useLifeOS } from '../context/LifeOSContext.tsx';
 import { TaskItem, CalendarEventItem } from '../types.ts';
+import { SmartSchedulerPanel } from './SmartSchedulerPanel.tsx';
+import {
+  parseTimeToMinutes,
+  formatMinutesToTime,
+  roundUpToNext5Minutes,
+  addDaysToDateStr,
+} from '../services/schedulingEngine.ts';
+import { parseSchedulePdfClientFallback } from '../services/localFreeAiFallback.ts';
 import {
   Plus,
   X,
   Trash2,
   Calendar as CalendarIcon,
+  Sparkles,
+  Upload,
+  FileText,
 } from 'lucide-react';
 
 interface CalendarTasksViewProps {
@@ -22,12 +33,16 @@ export const CalendarTasksView: React.FC<CalendarTasksViewProps> = ({
   const {
     tasks,
     events,
+    studyModules,
     todayDate,
+    currentTimeStr,
     createTask,
     updateTaskStatus,
     deleteTask,
     createCalendarEvent,
     deleteCalendarEvent,
+    createStudyModule,
+    createStudyItem,
   } = useLifeOS();
 
   const [calView, setCalView] = useState<'day' | 'week' | 'month' | 'agenda'>(
@@ -37,9 +52,36 @@ export const CalendarTasksView: React.FC<CalendarTasksViewProps> = ({
     'all' | 'study' | 'work' | 'personal' | 'health' | 'finance'
   >('all');
 
+  const [showSmartScheduler, setShowSmartScheduler] = useState(true);
   const [showNewEventModal, setShowNewEventModal] = useState(false);
+  const [showImportScheduleModal, setShowImportScheduleModal] = useState(false);
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskItem | null>(null);
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
+
+  // Calendar Schedule PDF Import state
+  const calSchedulePdfInputRef = useRef<HTMLInputElement | null>(null);
+  const [calPdfParsing, setCalPdfParsing] = useState(false);
+  const [calPdfImporting, setCalPdfImporting] = useState(false);
+  const [calPdfFileName, setCalPdfFileName] = useState<string | null>(null);
+  const [calPdfSummary, setCalPdfSummary] = useState<string | null>(null);
+  const [calParsedEvents, setCalParsedEvents] = useState<
+    {
+      title: string;
+      eventType: 'lecture' | 'exam' | 'study_block' | 'fixed';
+      date: string;
+      startTime: string;
+      endTime: string;
+      location?: string;
+    }[]
+  >([]);
+  const [calParsedLectures, setCalParsedLectures] = useState<
+    {
+      lectureNumber: number;
+      title: string;
+      estimatedMinutes: number;
+      difficulty: 'HIGH' | 'MEDIUM' | 'LOW';
+    }[]
+  >([]);
 
   // New Event Form State
   const [evTitle, setEvTitle] = useState('');
@@ -89,13 +131,179 @@ export const CalendarTasksView: React.FC<CalendarTasksViewProps> = ({
     setShowNewTaskModal(false);
   };
 
+  const handleCalSchedulePdfSelect = async (file: File) => {
+    setCalPdfParsing(true);
+    setCalPdfFileName(file.name);
+    setCalPdfSummary(`Extracting timetable & schedule from "${file.name}"...`);
+
+    try {
+      const isText = /\.(txt|md|csv|ics)$/i.test(file.name);
+      const attachmentPayload = await new Promise<{
+        fileName: string;
+        mimeType: string;
+        base64Data?: string;
+        textContent?: string;
+      }>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Failed to read PDF file'));
+        if (isText) {
+          reader.onload = () =>
+            resolve({
+              fileName: file.name,
+              mimeType: file.type || 'text/plain',
+              textContent: String(reader.result || ''),
+            });
+          reader.readAsText(file);
+        } else {
+          reader.onload = () => {
+            const str = String(reader.result || '');
+            const idx = str.indexOf(',');
+            resolve({
+              fileName: file.name,
+              mimeType: file.type || 'application/pdf',
+              base64Data: idx >= 0 ? str.slice(idx + 1) : str,
+            });
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      let data: any;
+      try {
+        const res = await fetch('/api/ai/parse-schedule-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            attachment: attachmentPayload,
+            moduleCode: studyModules[0]?.code || 'MOD101',
+            todayDate,
+          }),
+        });
+        if (!res.ok) throw new Error('Fallback to local PDF parser');
+        data = await res.json();
+      } catch {
+        data = parseSchedulePdfClientFallback({
+          attachment: attachmentPayload,
+          moduleCode: studyModules[0]?.code || 'MOD101',
+          todayDate,
+        });
+      }
+
+      setCalParsedEvents(Array.isArray(data.calendarEvents) ? data.calendarEvents : []);
+      setCalParsedLectures(Array.isArray(data.lectures) ? data.lectures : []);
+      setCalPdfSummary(
+        data.summary ||
+          `Extracted ${(data.calendarEvents || []).length} calendar events and ${
+            (data.lectures || []).length
+          } lectures.`
+      );
+    } catch (err) {
+      setCalPdfSummary(
+        err instanceof Error ? `Error: ${err.message}` : 'Failed to parse schedule PDF.'
+      );
+    } finally {
+      setCalPdfParsing(false);
+    }
+  };
+
+  const handleConfirmCalPdfImport = async () => {
+    setCalPdfImporting(true);
+    try {
+      for (const ev of calParsedEvents) {
+        await createCalendarEvent({
+          title: ev.title.slice(0, 140),
+          eventType: ev.eventType || 'lecture',
+          date: ev.date || todayDate,
+          startTime: ev.startTime || '09:00',
+          endTime: ev.endTime || '10:00',
+          location: ev.location || 'University / Study Desk',
+          isProtectedAnchor: ev.eventType === 'exam' || ev.eventType === 'fixed',
+        });
+      }
+
+      if (calParsedLectures.length > 0) {
+        let modId = studyModules[0]?.id || '';
+        const modCode = studyModules[0]?.code || 'IMP101';
+        if (!modId) {
+          modId = await createStudyModule({
+            code: modCode,
+            title: calPdfFileName ? calPdfFileName.replace(/\.pdf$/i, '') : 'Imported Schedule',
+            term: 'Current Term',
+            examDate: todayDate,
+            totalLectures: calParsedLectures.length,
+            completedLectures: 0,
+          });
+        }
+        for (const lec of calParsedLectures) {
+          await createStudyItem({
+            moduleId: modId,
+            moduleCode: modCode,
+            title: lec.title.slice(0, 180),
+            itemType: 'lecture',
+            status: 'unstudied',
+            importance:
+              lec.difficulty === 'LOW'
+                ? 'low'
+                : lec.difficulty === 'MEDIUM'
+                ? 'medium'
+                : 'high',
+            estimatedMinutes: lec.estimatedMinutes || 45,
+            confidenceRating: 3,
+            repetitionCount: 0,
+            nextReviewDate: todayDate,
+          });
+        }
+      }
+
+      setShowImportScheduleModal(false);
+      setCalParsedEvents([]);
+      setCalParsedLectures([]);
+      setCalPdfFileName(null);
+      setCalPdfSummary(null);
+    } finally {
+      setCalPdfImporting(false);
+    }
+  };
+
   const handleScheduleTaskToCalendar = async (task: TaskItem) => {
+    let targetDate = task.dueDate && task.dueDate >= todayDate ? task.dueDate : todayDate;
+    const nowMin = parseTimeToMinutes(currentTimeStr || '13:00');
+    const duration = Math.max(25, Math.min(120, task.estimatedMinutes || 45));
+    let startMin = task.scheduledStart
+      ? parseTimeToMinutes(task.scheduledStart)
+      : roundUpToNext5Minutes(nowMin + 15);
+
+    // Never schedule in the past on today's date
+    if (targetDate === todayDate && startMin < nowMin + 5) {
+      startMin = roundUpToNext5Minutes(nowMin + 15);
+    }
+
+    // Shift past any overlapping events on targetDate
+    const dayEvents = events
+      .filter((e) => e.date === targetDate)
+      .map((e) => ({
+        s: parseTimeToMinutes(e.startTime),
+        e: parseTimeToMinutes(e.endTime) + 10,
+      }))
+      .sort((a, b) => a.s - b.s);
+
+    for (const b of dayEvents) {
+      if (startMin < b.e && startMin + duration > b.s) {
+        startMin = roundUpToNext5Minutes(b.e);
+      }
+    }
+
+    if (startMin + duration > 23 * 60) {
+      targetDate = addDaysToDateStr(targetDate, 1);
+      startMin = 9 * 60;
+    }
+
     await createCalendarEvent({
       title: task.title,
       eventType: task.category === 'study' ? 'study_block' : 'fixed',
-      date: task.dueDate || todayDate,
-      startTime: task.scheduledStart || '10:00',
-      endTime: '11:00',
+      date: targetDate,
+      startTime: formatMinutesToTime(startMin),
+      endTime: formatMinutesToTime(startMin + duration),
       isProtectedAnchor: false,
       linkedRecordId: task.id,
     });
@@ -612,6 +820,25 @@ export const CalendarTasksView: React.FC<CalendarTasksViewProps> = ({
           </div>
 
           <button
+            onClick={() => setShowSmartScheduler((prev) => !prev)}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-colors ${
+              showSmartScheduler
+                ? 'bg-[#9BB9A2]/20 border-[#9BB9A2] text-[#9BB9A2]'
+                : 'bg-[#222C27] border-[#BDD3C1]/15 text-[#9AA79E] hover:text-[#E8EDE8]'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            {showSmartScheduler ? 'Hide Smart AI Scheduler' : 'Open Smart AI Scheduler & Memory'}
+          </button>
+
+          <button
+            onClick={() => setShowImportScheduleModal(true)}
+            className="px-3.5 py-2 rounded-xl bg-[#2C3932] hover:bg-[#35453C] border border-[#9BB9A2]/30 text-[#E8EDE8] text-xs font-semibold flex items-center gap-1.5 transition-colors"
+          >
+            <Upload className="w-3.5 h-3.5 text-[#9BB9A2]" /> Import Schedule PDF
+          </button>
+
+          <button
             onClick={() => setShowNewEventModal(true)}
             className="px-4 py-2 rounded-xl bg-[#9BB9A2] hover:bg-[#a9c5b0] text-[#171E1B] text-xs font-semibold flex items-center gap-1.5 transition-colors"
           >
@@ -619,6 +846,11 @@ export const CalendarTasksView: React.FC<CalendarTasksViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Context-Aware Smart Scheduling Engine & Persistent Memory Panel */}
+      {showSmartScheduler && (
+        <SmartSchedulerPanel onClose={() => setShowSmartScheduler(false)} />
+      )}
 
       {calView === 'week' ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -1017,6 +1249,131 @@ export const CalendarTasksView: React.FC<CalendarTasksViewProps> = ({
                   Mark complete
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Schedule PDF Modal */}
+      {showImportScheduleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-[#222C27] border border-[#BDD3C1]/20 p-5 space-y-4">
+            <input
+              ref={calSchedulePdfInputRef}
+              type="file"
+              accept=".pdf,application/pdf,.txt,.md,.csv,.ics"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (f) handleCalSchedulePdfSelect(f);
+              }}
+              className="hidden"
+            />
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-[#E8EDE8]">
+                  Import Schedule / Timetable PDF
+                </h3>
+                <p className="text-xs text-[#9AA79E]">
+                  Upload a university timetable, syllabus, or schedule PDF (.pdf, .txt, .csv, .ics)
+                </p>
+              </div>
+              <button
+                onClick={() => setShowImportScheduleModal(false)}
+                className="text-[#9AA79E] hover:text-[#E8EDE8]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const dropped = e.dataTransfer.files?.[0];
+                if (dropped) handleCalSchedulePdfSelect(dropped);
+              }}
+              onClick={() => calSchedulePdfInputRef.current?.click()}
+              className="p-5 rounded-xl border border-dashed border-[#9BB9A2]/40 bg-[#2C3932]/50 hover:bg-[#2C3932]/80 cursor-pointer text-center space-y-2 transition-all"
+            >
+              <div className="w-10 h-10 rounded-xl bg-[#9BB9A2]/15 text-[#9BB9A2] flex items-center justify-center mx-auto">
+                <FileText className="w-5 h-5" />
+              </div>
+              <p className="text-xs font-semibold text-[#E8EDE8]">
+                {calPdfParsing
+                  ? `Extracting schedule from "${calPdfFileName}"...`
+                  : calPdfFileName
+                  ? `Loaded: ${calPdfFileName}`
+                  : 'Click or drop your Schedule PDF here'}
+              </p>
+              <p className="text-[11px] text-[#9AA79E]">
+                Accepts <strong className="text-[#9BB9A2]">.pdf</strong>, .txt, .csv, .ics
+              </p>
+            </div>
+
+            {calPdfSummary && (
+              <div className="p-3 rounded-xl bg-[#9BB9A2]/15 border border-[#9BB9A2]/30 text-xs text-[#E8EDE8]">
+                {calPdfSummary}
+              </div>
+            )}
+
+            {(calParsedEvents.length > 0 || calParsedLectures.length > 0) && (
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {calParsedEvents.map((ev, idx) => (
+                  <div
+                    key={`ev-${idx}`}
+                    className="p-2.5 rounded-xl bg-[#2C3932]/80 flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <p className="font-semibold text-[#E8EDE8]">{ev.title}</p>
+                      <p className="text-[10px] text-[#9AA79E]">
+                        {ev.date} · {ev.startTime}–{ev.endTime} ({ev.eventType})
+                      </p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#9BB9A2]/20 text-[#9BB9A2]">
+                      Calendar
+                    </span>
+                  </div>
+                ))}
+                {calParsedLectures.map((lec, idx) => (
+                  <div
+                    key={`lec-${idx}`}
+                    className="p-2.5 rounded-xl bg-[#2C3932]/60 flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <p className="font-medium text-[#E8EDE8]">{lec.title}</p>
+                      <p className="text-[10px] text-[#9AA79E]">
+                        Est. {lec.estimatedMinutes}m · {lec.difficulty}
+                      </p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#9BB9A2]/15 text-[#9BB9A2]">
+                      Study Lecture
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowImportScheduleModal(false)}
+                className="px-4 py-2 rounded-xl bg-[#2C3932] text-xs text-[#9AA79E]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  calPdfParsing ||
+                  calPdfImporting ||
+                  (calParsedEvents.length === 0 && calParsedLectures.length === 0)
+                }
+                onClick={handleConfirmCalPdfImport}
+                className="px-4 py-2 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold disabled:opacity-50"
+              >
+                {calPdfImporting ? 'Importing...' : 'Confirm & Import Schedule'}
+              </button>
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useLifeOS } from '../context/LifeOSContext.tsx';
 import { NavDestination } from '../types.ts';
+import { SmartSchedulerPanel } from './SmartSchedulerPanel.tsx';
 import {
   Play,
   Pause,
@@ -42,31 +43,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     studyItems,
     financeRecords,
     goalsHabits,
+    pomodoroState,
+    pomodoroSessions,
     todayDate,
+    currentTimeStr,
+    timezone,
     updateTaskStatus,
     deleteTask,
-    createCalendarEvent,
-    awardXpAndCoins,
+    togglePomodoro,
+    completePomodoroSession,
+    generateSmartSchedule,
   } = useLifeOS();
 
   const [chartRange, setChartRange] = useState<'today' | '7d' | '30d' | '12m'>('7d');
-  const [pomodoroSeconds, setPomodoroSeconds] = useState(25 * 60);
-  const [pomodoroRunning, setPomodoroRunning] = useState(false);
-  const [pomodoroSessionCount, setPomodoroSessionCount] = useState(1);
   const [briefingText, setBriefingText] = useState<string>('');
   const [loadingBriefing, setLoadingBriefing] = useState(false);
   const [showPlanDayModal, setShowPlanDayModal] = useState(false);
-  const [planEnergy, setPlanEnergy] = useState<'Low' | 'Normal' | 'High'>('Normal');
-  const [planFocus, setPlanFocus] = useState<'Balanced' | 'Exam crunch' | 'Catch-up' | 'Light day'>('Balanced');
-  const [planApplied, setPlanApplied] = useState(false);
-
-  useEffect(() => {
-    if (!pomodoroRunning) return;
-    const timer = setInterval(() => {
-      setPomodoroSeconds((prev) => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [pomodoroRunning]);
 
   const formatTimer = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -104,35 +96,57 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .filter((f) => f.recordType === 'budget')
     .reduce((acc, r) => acc + (r.targetAmountMinor || r.amountMinor) / 100, 0);
 
-  // Build real 7-day study chart data from studyItems, tasks, and calendar study events
+  // Build real Study Time chart data strictly from Pomodoro Timer sessions + live running Pomodoro elapsed time (NOT Calendar events)
+  const liveActivePomodoroMins =
+    pomodoroState.mode === 'focus' ? Math.floor(pomodoroState.elapsedFocusSeconds / 60) : 0;
+
   const { chartData, totalStudyHours } = useMemo(() => {
     const days: { date: string; day: string; studyHours: number; revisionHours: number }[] = [];
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     let sumHours = 0;
 
-    for (let i = 6; i >= 0; i--) {
+    const numDays = chartRange === 'today' ? 1 : chartRange === '30d' ? 14 : 7;
+
+    for (let i = numDays - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const iso = d.toISOString().split('T')[0];
-      const dayLabel = dayNames[d.getDay()];
+      const dayLabel = chartRange === '30d' ? iso.slice(5) : dayNames[d.getDay()];
 
-      const studiedMins = studyItems
-        .filter((s) => s.lastStudiedDate === iso)
-        .reduce((acc, s) => acc + (s.estimatedMinutes || 30), 0);
+      const dayPomodoros = pomodoroSessions.filter(
+        (s) => s.date === iso && s.mode === 'focus'
+      );
 
-      const completedStudyTaskMins = tasks
-        .filter((t) => t.category === 'study' && t.status === 'completed' && t.dueDate === iso)
-        .reduce((acc, t) => acc + (t.estimatedMinutes || 30), 0);
+      const isToday = iso === todayDate;
+      const liveDeepExtra =
+        isToday &&
+        pomodoroState.category !== 'Active Recall' &&
+        pomodoroState.category !== 'Exam Practice'
+          ? liveActivePomodoroMins
+          : 0;
+      const liveRecallExtra =
+        isToday &&
+        (pomodoroState.category === 'Active Recall' ||
+          pomodoroState.category === 'Exam Practice')
+          ? liveActivePomodoroMins
+          : 0;
 
-      const eventStudyMins = events
-        .filter(
-          (e) =>
-            e.date === iso && (e.eventType === 'study_block' || e.eventType === 'lecture')
-        )
-        .reduce((acc) => acc + 60, 0);
+      const deepStudyPomodoroMins =
+        dayPomodoros
+          .filter(
+            (s) => s.category !== 'Active Recall' && s.category !== 'Exam Practice'
+          )
+          .reduce((acc, s) => acc + s.durationMinutes, 0) + liveDeepExtra;
 
-      const studyH = Math.round(((completedStudyTaskMins + eventStudyMins) / 60) * 10) / 10;
-      const revH = Math.round((studiedMins / 60) * 10) / 10;
+      const recallPomodoroMins =
+        dayPomodoros
+          .filter(
+            (s) => s.category === 'Active Recall' || s.category === 'Exam Practice'
+          )
+          .reduce((acc, s) => acc + s.durationMinutes, 0) + liveRecallExtra;
+
+      const studyH = Math.round((deepStudyPomodoroMins / 60) * 100) / 100;
+      const revH = Math.round((recallPomodoroMins / 60) * 100) / 100;
       sumHours += studyH + revH;
 
       days.push({
@@ -143,9 +157,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       });
     }
     return { chartData: days, totalStudyHours: Math.round(sumHours * 10) / 10 };
-  }, [studyItems, tasks, events]);
+  }, [
+    pomodoroSessions,
+    chartRange,
+    todayDate,
+    liveActivePomodoroMins,
+    pomodoroState.category,
+  ]);
 
-  const activeFocusItem = openTasks[0]?.title || dueRevisions[0]?.title || 'Ready for focus';
+  const linkedTaskObj = tasks.find((t) => t.id === pomodoroState.linkedTaskId);
+  const linkedStudyObj = studyItems.find((s) => s.id === pomodoroState.linkedStudyItemId);
+  const activeFocusItem =
+    linkedStudyObj?.title ||
+    linkedTaskObj?.title ||
+    pomodoroState.customLabel ||
+    openTasks[0]?.title ||
+    dueRevisions[0]?.title ||
+    pomodoroState.category;
+
   const todayEvents = events
     .filter((e) => e.date === todayDate)
     .sort((a, b) => a.startTime.localeCompare(b.startTime));
@@ -153,10 +182,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const activeQuest = goalsHabits.find((g) => g.recordType === 'quest');
 
   const handleCompletePomodoro = async () => {
-    setPomodoroRunning(false);
-    setPomodoroSeconds(25 * 60);
-    setPomodoroSessionCount((c) => c + 1);
-    await awardXpAndCoins(25, 10);
+    await completePomodoroSession();
   };
 
   const handleGenerateBriefing = async () => {
@@ -185,118 +211,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
-  // Build proposed day schedule dynamically from user's real open tasks & due revisions
-  const proposedSlots = useMemo(() => {
-    const slots: {
-      time: string;
-      startTime: string;
-      endTime: string;
-      title: string;
-      tone: 'sage' | 'gold' | 'neutral';
-      eventType: 'prayer' | 'study_block' | 'fixed';
-    }[] = [
-      {
-        time: '04:18 - 04:45',
-        startTime: '04:18',
-        endTime: '04:45',
-        title: 'Fajr prayer (protected)',
-        tone: 'gold',
-        eventType: 'prayer',
-      },
-    ];
-
-    const firstStudy = dueRevisions[0]?.title || openTasks[0]?.title;
-    if (firstStudy) {
-      slots.push({
-        time: '09:00 - 10:30',
-        startTime: '09:00',
-        endTime: '10:30',
-        title: firstStudy,
-        tone: 'sage',
-        eventType: 'study_block',
-      });
-    }
-
-    slots.push({
-      time: '11:52 - 12:15',
-      startTime: '11:52',
-      endTime: '12:15',
-      title: 'Dhuhr prayer (protected)',
-      tone: 'gold',
-      eventType: 'prayer',
-    });
-
-    const secondItem = openTasks[1]?.title || dueRevisions[1]?.title;
-    if (secondItem) {
-      slots.push({
-        time: '13:00 - 14:15',
-        startTime: '13:00',
-        endTime: '14:15',
-        title: secondItem,
-        tone: 'neutral',
-        eventType: 'fixed',
-      });
-    }
-
-    slots.push({
-      time: '15:05 - 15:25',
-      startTime: '15:05',
-      endTime: '15:25',
-      title: 'Asr prayer (protected)',
-      tone: 'gold',
-      eventType: 'prayer',
-    });
-
-    const thirdItem = openTasks[2]?.title || dueRevisions[2]?.title;
-    if (thirdItem) {
-      slots.push({
-        time: '15:30 - 17:00',
-        startTime: '15:30',
-        endTime: '17:00',
-        title: thirdItem,
-        tone: 'sage',
-        eventType: 'study_block',
-      });
-    }
-
-    slots.push({
-      time: '18:18 - 18:40',
-      startTime: '18:18',
-      endTime: '18:40',
-      title: 'Maghrib prayer (protected)',
-      tone: 'gold',
-      eventType: 'prayer',
-    });
-
-    return slots;
-  }, [openTasks, dueRevisions]);
-
-  const handleApplyDayPlan = async () => {
-    for (const slot of proposedSlots) {
-      const alreadyExists = events.some(
-        (e) => e.date === todayDate && e.startTime === slot.startTime && e.title === slot.title
-      );
-      if (!alreadyExists) {
-        await createCalendarEvent({
-          title: slot.title,
-          eventType: slot.eventType,
-          date: todayDate,
-          startTime: slot.startTime,
-          endTime: slot.endTime,
-          location: slot.eventType === 'prayer' ? 'Protected Anchor' : 'Workspace',
-          isProtectedAnchor: slot.eventType === 'prayer',
-        });
-      }
-    }
-    setPlanApplied(true);
-    setTimeout(() => {
-      setShowPlanDayModal(false);
-      setPlanApplied(false);
-    }, 800);
+  const handleOpenPlanMyDay = async () => {
+    setShowPlanDayModal(true);
+    await generateSmartSchedule({ targetDays: 1 });
   };
 
-  const totalPomodoroSecs = 25 * 60;
-  const ringProgress = Math.min(1, Math.max(0, 1 - pomodoroSeconds / totalPomodoroSecs));
+  const totalPomodoroSecs = Math.max(60, pomodoroState.totalDurationSeconds);
+  const ringProgress = Math.min(
+    1,
+    Math.max(0, 1 - pomodoroState.remainingSeconds / totalPomodoroSecs)
+  );
   const ringRadius = 42;
   const ringCircumference = 2 * Math.PI * ringRadius;
   const ringOffset = ringCircumference * (1 - ringProgress);
@@ -316,46 +240,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             Good morning, {firstName}
           </h1>
           <p className="text-xs md:text-sm text-[#9AA79E] mt-1">
-            {formattedDateLabel} · {openTasks.length} open tasks, {dueRevisions.length} revisions
-            due
+            {formattedDateLabel} ({currentTimeStr} {timezone}) · {openTasks.length} open tasks,{' '}
+            {dueRevisions.length} revisions due
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
           <button
-            onClick={() => setShowPlanDayModal(true)}
+            onClick={handleOpenPlanMyDay}
             className="px-3.5 py-2 rounded-xl bg-[#2C3932] hover:bg-[#35453C] border border-[#BDD3C1]/15 text-[#E8EDE8] text-xs font-medium flex items-center gap-1.5 transition-colors"
           >
             <Wand2 className="w-3.5 h-3.5 text-[#9BB9A2]" />
             Plan my day
           </button>
           <button
-            onClick={() => onNavigate('analytics')}
+            onClick={() => onNavigate('pomodoro')}
             className="px-3.5 py-2 rounded-xl bg-[#2C3932] hover:bg-[#35453C] border border-[#BDD3C1]/15 text-[#E8EDE8] text-xs font-medium transition-colors"
           >
-            Full report
+            Pomodoro Studio
           </button>
           <button
-            onClick={() => setPomodoroRunning((r) => !r)}
+            onClick={togglePomodoro}
             className="px-4 py-2 rounded-xl bg-[#9BB9A2] hover:bg-[#a9c5b0] text-[#171E1B] text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
           >
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-            {pomodoroRunning ? 'Pause focus' : 'Start focus'}
+            {pomodoroState.running ? 'Pause focus' : 'Start focus'}
           </button>
         </div>
       </div>
 
       {/* Top Row: Study Time Chart (8 cols) + Right Now Focus Card (4 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Study time, last 7 days */}
+        {/* Study time (Pomodoro-based) */}
         <div className="lg:col-span-8 sage-card p-5 flex flex-col justify-between">
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4">
             <div>
-              <p className="text-xs font-medium text-[#9AA79E]">Study time, last 7 days</p>
+              <p className="text-xs font-medium text-[#9AA79E]">
+                Study time (Pomodoro timer)
+              </p>
               <div className="flex items-center gap-2.5 mt-1">
                 <span className="text-2xl font-bold text-[#E8EDE8]">{totalStudyHours} h</span>
                 <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2]">
-                  {studyModules.length} modules
+                  {pomodoroSessions.length} pomodoros logged
                 </span>
               </div>
             </div>
@@ -447,17 +373,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex items-center justify-between mt-3 pt-2 border-t border-[#BDD3C1]/10 text-[11px] text-[#9AA79E]">
             <div className="flex items-center gap-5">
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#9BB9A2]" /> Study Blocks
+                <span className="w-2.5 h-2.5 rounded-full bg-[#9BB9A2]" /> Deep Study Pomodoros
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#6C8C76]" /> Revisions
+                <span className="w-2.5 h-2.5 rounded-full bg-[#6C8C76]" /> Recall &amp; Exam Pomodoros
               </span>
             </div>
             <button
-              onClick={() => onNavigate('study')}
+              onClick={() => onNavigate('pomodoro')}
               className="text-[#9BB9A2] hover:underline"
             >
-              Open Study →
+              Open Pomodoro →
             </button>
           </div>
         </div>
@@ -466,10 +392,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="lg:col-span-4 sage-card p-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-medium text-[#9AA79E]">Right now</span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2]">
-                Focus
+              <span className="text-xs font-medium text-[#9AA79E]">
+                Right now · {pomodoroState.category}
               </span>
+              <button
+                onClick={() => onNavigate('pomodoro')}
+                className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#9BB9A2]/20 text-[#9BB9A2] hover:bg-[#9BB9A2]/30"
+              >
+                {pomodoroState.running ? '● Running' : 'Configure →'}
+              </button>
             </div>
 
             <div className="flex items-center gap-4">
@@ -496,7 +427,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   />
                 </svg>
                 <span className="absolute text-base font-bold text-[#E8EDE8] font-mono">
-                  {formatTimer(pomodoroSeconds)}
+                  {formatTimer(pomodoroState.remainingSeconds)}
                 </span>
               </div>
 
@@ -505,14 +436,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {activeFocusItem}
                 </h3>
                 <p className="text-xs text-[#9AA79E] mt-0.5">
-                  Pomodoro session #{pomodoroSessionCount}
+                  Pomodoro #{pomodoroState.sessionNumber} ·{' '}
+                  {Math.floor(pomodoroState.elapsedFocusSeconds / 60)}m elapsed
                 </p>
                 <div className="flex items-center gap-2 mt-3">
                   <button
-                    onClick={() => setPomodoroRunning((r) => !r)}
+                    onClick={togglePomodoro}
                     className="px-3 py-1.5 rounded-lg bg-[#2C3932] hover:bg-[#37473F] text-xs font-medium text-[#E8EDE8] flex items-center gap-1 transition-colors"
                   >
-                    {pomodoroRunning ? (
+                    {pomodoroState.running ? (
                       <>
                         <Pause className="w-3 h-3" /> Pause
                       </>
@@ -526,7 +458,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     onClick={handleCompletePomodoro}
                     className="px-3 py-1.5 rounded-lg bg-[#9BB9A2] hover:bg-[#a9c5b0] text-xs font-semibold text-[#171E1B] transition-colors"
                   >
-                    Done
+                    Log
                   </button>
                 </div>
               </div>
@@ -823,123 +755,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Plan My Day Modal */}
+      {/* Context-Aware Plan My Day Modal */}
       {showPlanDayModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-3xl rounded-2xl bg-[#222C27] border border-[#BDD3C1]/25 shadow-2xl overflow-hidden">
-            <div className="p-6 border-b border-[#BDD3C1]/10 flex items-start justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-[#E8EDE8]">
-                  Plan my day · {formattedDateLabel}
-                </h2>
-                <p className="text-xs text-[#9AA79E] mt-0.5">
-                  Spoon Feeder builds a realistic schedule around your prayer anchors and real tasks
-                </p>
-              </div>
-              <button
-                onClick={() => setShowPlanDayModal(false)}
-                className="p-1.5 rounded-lg text-[#9AA79E] hover:text-[#E8EDE8] hover:bg-[#2C3932]"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs text-[#9AA79E] mb-2">
-                    How is your energy today?
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(['Low', 'Normal', 'High'] as const).map((lvl) => (
-                      <button
-                        key={lvl}
-                        onClick={() => setPlanEnergy(lvl)}
-                        className={`py-2 rounded-xl text-xs font-medium transition-colors ${
-                          planEnergy === lvl
-                            ? 'bg-[#9BB9A2] text-[#171E1B] font-semibold'
-                            : 'bg-[#2C3932] text-[#9AA79E] hover:text-[#E8EDE8]'
-                        }`}
-                      >
-                        {lvl}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-[#9AA79E] mb-2">Focus for today</label>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {(['Balanced', 'Exam crunch', 'Catch-up', 'Light day'] as const).map((f) => (
-                      <button
-                        key={f}
-                        onClick={() => setPlanFocus(f)}
-                        className={`py-2 px-2 rounded-xl text-xs font-medium transition-colors ${
-                          planFocus === f
-                            ? 'bg-[#9BB9A2] text-[#171E1B] font-semibold'
-                            : 'bg-[#2C3932] text-[#9AA79E] hover:text-[#E8EDE8]'
-                        }`}
-                      >
-                        {f}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                <div className="md:col-span-7 space-y-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-[#65756B]">
-                    PROPOSED SCHEDULE ({proposedSlots.length} BLOCKS)
-                  </p>
-                  {proposedSlots.map((slot, idx) => (
-                    <div
-                      key={idx}
-                      className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs ${
-                        slot.tone === 'gold'
-                          ? 'bg-[#352F23] border border-[#D8B26E]/30 text-[#D8B26E]'
-                          : slot.tone === 'sage'
-                          ? 'bg-[#2C3932] border border-[#9BB9A2]/30 text-[#E8EDE8]'
-                          : 'bg-[#1C2520] border border-[#BDD3C1]/10 text-[#E8EDE8]'
-                      }`}
-                    >
-                      <span className="font-mono text-[11px] opacity-80 w-28 shrink-0">
-                        {slot.time}
-                      </span>
-                      <span className="font-medium truncate">{slot.title}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="md:col-span-5 rounded-xl bg-[#2C3932]/70 border border-[#BDD3C1]/15 p-4 flex flex-col justify-between">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wider text-[#65756B] mb-3">
-                      WHY THIS PLAN
-                    </p>
-                    <ul className="space-y-2.5 text-xs text-[#E8EDE8]/90">
-                      <li>• Prayer anchors protected with {profile?.prayerBufferMinutes || 15}-min buffers</li>
-                      <li>• Prioritizes {openTasks.length} open tasks &amp; {dueRevisions.length} due revisions</li>
-                      <li>• Energy mode: {planEnergy} · Strategy: {planFocus}</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-6 py-4 bg-[#1C2520] border-t border-[#BDD3C1]/10 flex items-center justify-end gap-3">
-              <button
-                onClick={() => setShowPlanDayModal(false)}
-                className="px-4 py-2 rounded-xl bg-[#2C3932] text-xs font-medium text-[#9AA79E] hover:text-[#E8EDE8]"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleApplyDayPlan}
-                className="px-5 py-2 rounded-xl bg-[#9BB9A2] hover:bg-[#a9c5b0] text-[#171E1B] text-xs font-semibold transition-colors"
-              >
-                {planApplied ? 'Applied to Calendar ✓' : 'Apply plan to today'}
-              </button>
-            </div>
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-w-5xl max-h-[90vh] overflow-y-auto">
+            <SmartSchedulerPanel onClose={() => setShowPlanDayModal(false)} />
           </div>
         </div>
       )}

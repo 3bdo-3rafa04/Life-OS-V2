@@ -3,6 +3,7 @@ import { LifeOSProvider, useLifeOS } from './context/LifeOSContext';
 import { DashboardView } from './components/DashboardView';
 import { CalendarTasksView } from './components/CalendarTasksView';
 import { TasksView } from './components/TasksView';
+import { PomodoroView } from './components/PomodoroView';
 import { StudyView } from './components/StudyView';
 import { LibraryView } from './components/LibraryView';
 import { HealthView } from './components/HealthView';
@@ -16,6 +17,7 @@ import {
   LayoutGrid,
   Calendar,
   CheckSquare,
+  Timer,
   BookOpen,
   Library,
   HeartPulse,
@@ -32,12 +34,16 @@ import {
   LogOut,
   Menu,
   X,
+  Play,
+  Pause,
+  CheckCircle2,
 } from 'lucide-react';
 
 export type NavTab =
   | 'dashboard'
   | 'calendar'
   | 'tasks'
+  | 'pomodoro'
   | 'study'
   | 'library'
   | 'health'
@@ -52,6 +58,7 @@ const NAV_ITEMS: { id: NavTab; label: string; icon: React.ComponentType<{ classN
     { id: 'dashboard', label: 'Dashboard', icon: LayoutGrid },
     { id: 'calendar', label: 'Calendar', icon: Calendar },
     { id: 'tasks', label: 'Tasks', icon: CheckSquare },
+    { id: 'pomodoro', label: 'Pomodoro', icon: Timer },
     { id: 'study', label: 'Study', icon: BookOpen },
     { id: 'library', label: 'Library & Notes', icon: Library },
     { id: 'health', label: 'Health', icon: HeartPulse },
@@ -72,6 +79,10 @@ const LifeOSShell: React.FC = () => {
     studyItems,
     knowledgeItems,
     aiLogs,
+    pomodoroState,
+    togglePomodoro,
+    completePomodoroSession,
+    dismissPomodoroAlert,
     signIn,
     logOut,
   } = useLifeOS();
@@ -81,6 +92,7 @@ const LifeOSShell: React.FC = () => {
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showAiDrawer, setShowAiDrawer] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -101,10 +113,14 @@ const LifeOSShell: React.FC = () => {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         setShowQuickAdd((prev) => !prev);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        setShowAiDrawer((prev) => !prev);
       } else if (e.key === 'Escape') {
         setShowQuickAdd(false);
         setShowSearchModal(false);
         setShowNotifications(false);
+        setShowAiDrawer(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -271,6 +287,19 @@ const LifeOSShell: React.FC = () => {
                       {totalTasksCount - completedTasksCount}
                     </span>
                   )}
+                  {item.id === 'pomodoro' &&
+                    (pomodoroState.running || pomodoroState.elapsedFocusSeconds > 0) && (
+                      <span
+                        className={`ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-mono tabular-nums ${
+                          pomodoroState.running
+                            ? 'bg-[#6EBF8B]/20 text-[#6EBF8B] animate-pulse'
+                            : 'bg-[#E5B567]/20 text-[#E5B567]'
+                        }`}
+                      >
+                        {String(Math.floor(pomodoroState.remainingSeconds / 60)).padStart(2, '0')}:
+                        {String(pomodoroState.remainingSeconds % 60).padStart(2, '0')}
+                      </span>
+                    )}
                   {item.id === 'spoon-feeder' && pendingAiLogs.length > 0 && (
                     <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E5B567]/20 text-[#E5B567]">
                       {pendingAiLogs.length}
@@ -340,12 +369,53 @@ const LifeOSShell: React.FC = () => {
 
           {/* Right Actions */}
           <div className="flex items-center gap-2.5">
+            {/* Live Background Pomodoro Pill in Top Bar */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[var(--bg-card)] border border-[#9BB9A2]/35 text-xs">
+              <button
+                onClick={togglePomodoro}
+                className={`p-1 rounded-lg transition-colors ${
+                  pomodoroState.running
+                    ? 'bg-[#6EBF8B]/20 text-[#6EBF8B]'
+                    : 'bg-[#9BB9A2]/20 text-[#9BB9A2]'
+                }`}
+                title={pomodoroState.running ? 'Pause Pomodoro' : 'Start Pomodoro'}
+              >
+                {pomodoroState.running ? (
+                  <Pause className="w-3 h-3" />
+                ) : (
+                  <Play className="w-3 h-3" />
+                )}
+              </button>
+              <button
+                onClick={() => setActiveTab('pomodoro')}
+                className="flex items-center gap-1.5 text-left"
+                title="Open Pomodoro Category"
+              >
+                <span className="font-mono font-bold text-[var(--text-primary)]">
+                  {String(Math.floor(pomodoroState.remainingSeconds / 60)).padStart(2, '0')}:
+                  {String(pomodoroState.remainingSeconds % 60).padStart(2, '0')}
+                </span>
+                <span className="hidden md:inline text-[11px] text-[#9BB9A2] font-medium">
+                  · {pomodoroState.category}
+                </span>
+              </button>
+            </div>
+
             <button
               onClick={() => setActiveTab('tasks')}
               className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#E5B567]/15 text-[#E5B567] text-xs font-semibold"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-[#E5B567]" />
               {dueTodayTasks.length} due today
+            </button>
+
+            <button
+              onClick={() => setShowAiDrawer((prev) => !prev)}
+              className="px-3.5 py-2 rounded-xl bg-[#9BB9A2]/20 border border-[#9BB9A2]/45 text-[#9BB9A2] text-xs font-semibold hover:bg-[#9BB9A2]/30 flex items-center gap-1.5"
+              title="Open Spoon Feeder AI Copilot (Ctrl + J)"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Spoon Feeder AI</span>
             </button>
 
             <button
@@ -427,6 +497,55 @@ const LifeOSShell: React.FC = () => {
           </div>
         </header>
 
+        {/* Live Pomodoro Completion Notification Banner */}
+        {pomodoroState.liveAlert && (
+          <div className="mx-4 sm:mx-8 mt-4 p-4 rounded-2xl bg-[#222C27] border-2 border-[#6EBF8B] shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 z-40">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-[#6EBF8B]/20 text-[#6EBF8B] flex items-center justify-center shrink-0">
+                <Bell className="w-4 h-4 animate-bounce" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-[#6EBF8B]">
+                    LIVE POMODORO NOTIFICATION · {pomodoroState.liveAlert.timestamp}
+                  </span>
+                </div>
+                <p className="text-sm font-bold text-[#E8EDE8]">
+                  {pomodoroState.liveAlert.title}
+                </p>
+                <p className="text-xs text-[#9AA79E]">{pomodoroState.liveAlert.message}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => {
+                  dismissPomodoroAlert();
+                  togglePomodoro();
+                }}
+                className="px-3.5 py-2 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold"
+              >
+                {pomodoroState.running ? 'Running' : 'Start Next Timer'}
+              </button>
+              <button
+                onClick={() => {
+                  dismissPomodoroAlert();
+                  setActiveTab('pomodoro');
+                }}
+                className="px-3 py-2 rounded-xl bg-[#2C3932] text-[#E8EDE8] text-xs font-medium"
+              >
+                Open Pomodoro
+              </button>
+              <button
+                onClick={dismissPomodoroAlert}
+                className="p-1.5 rounded-lg text-[#9AA79E] hover:text-[#E8EDE8]"
+                title="Dismiss notification"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Main Viewport */}
         <main className="flex-1 px-4 sm:px-8 pt-6 max-w-7xl w-full mx-auto">
           {activeTab === 'dashboard' && (
@@ -434,6 +553,7 @@ const LifeOSShell: React.FC = () => {
               onNavigate={(dest) => {
                 if (dest === 'overview') setActiveTab('dashboard');
                 else if (dest === 'tasks') setActiveTab('tasks');
+                else if (dest === 'pomodoro') setActiveTab('pomodoro');
                 else if (dest === 'rank') setActiveTab('goals');
                 else if (dest === 'spoon_feeder') setActiveTab('spoon-feeder');
                 else setActiveTab(dest as NavTab);
@@ -446,18 +566,166 @@ const LifeOSShell: React.FC = () => {
           {activeTab === 'tasks' && (
             <TasksView onNavigateCalendar={() => setActiveTab('calendar')} />
           )}
+          {activeTab === 'pomodoro' && <PomodoroView />}
           {activeTab === 'study' && <StudyView />}
           {activeTab === 'library' && <LibraryView />}
           {activeTab === 'health' && <HealthView />}
           {activeTab === 'finance' && <FinanceView />}
           {activeTab === 'goals' && <GoalsRankView />}
           {activeTab === 'analytics' && <AnalyticsView />}
-          {activeTab === 'spoon-feeder' && <SpoonFeederPanel />}
+          {activeTab === 'spoon-feeder' && (
+            <SpoonFeederPanel
+              onNavigate={(dest) => {
+                if (dest === 'overview') setActiveTab('dashboard');
+                else if (dest === 'pomodoro') setActiveTab('pomodoro');
+                else if (dest === 'rank') setActiveTab('goals');
+                else setActiveTab(dest as NavTab);
+              }}
+            />
+          )}
           {activeTab === 'settings' && (
             <SettingsView theme={theme} onToggleTheme={handleToggleTheme} />
           )}
         </main>
       </div>
+
+      {/* Floating Background Pomodoro Mini-Player (Visible across tabs while timer is active) */}
+      {activeTab !== 'pomodoro' &&
+        (pomodoroState.running || pomodoroState.elapsedFocusSeconds > 0) && (
+          <div className="fixed bottom-5 right-5 z-40 w-80 rounded-2xl bg-[#222C27]/95 backdrop-blur-md border border-[#9BB9A2]/45 p-4 shadow-2xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    pomodoroState.running ? 'bg-[#6EBF8B] animate-ping' : 'bg-[#E5B567]'
+                  }`}
+                />
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#9BB9A2]">
+                  {pomodoroState.mode === 'focus'
+                    ? pomodoroState.category
+                    : pomodoroState.mode === 'short_break'
+                    ? 'Short Break'
+                    : 'Long Break'}
+                </span>
+              </div>
+              <button
+                onClick={() => setActiveTab('pomodoro')}
+                className="text-[11px] text-[#9BB9A2] hover:underline font-medium"
+              >
+                Expand →
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-2xl font-bold font-mono text-[#E8EDE8]">
+                  {String(Math.floor(pomodoroState.remainingSeconds / 60)).padStart(2, '0')}:
+                  {String(pomodoroState.remainingSeconds % 60).padStart(2, '0')}
+                </div>
+                <div className="text-[10px] text-[#9AA79E]">
+                  Session #{pomodoroState.sessionNumber} ·{' '}
+                  {Math.floor(pomodoroState.elapsedFocusSeconds / 60)}m focused
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={togglePomodoro}
+                  className="px-3 py-1.5 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold flex items-center gap-1"
+                >
+                  {pomodoroState.running ? (
+                    <>
+                      <Pause className="w-3 h-3" /> Pause
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3 h-3" /> Resume
+                    </>
+                  )}
+                </button>
+                {pomodoroState.mode === 'focus' && (
+                  <button
+                    onClick={() => completePomodoroSession()}
+                    className="p-2 rounded-xl bg-[#2C3932] hover:bg-[#35453C] text-[#6EBF8B]"
+                    title="Finish & Log Study Minutes"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="w-full h-1.5 rounded-full bg-[#171E1B] overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[#9BB9A2] transition-all duration-300"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.round(
+                      ((pomodoroState.totalDurationSeconds - pomodoroState.remainingSeconds) /
+                        Math.max(1, pomodoroState.totalDurationSeconds)) *
+                        100
+                    )
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+      {/* Global Spoon Feeder AI Slide-Over Drawer (Accessible from any screen) */}
+      {showAiDrawer && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end"
+          onClick={() => setShowAiDrawer(false)}
+        >
+          <div
+            className="w-full max-w-xl h-full bg-[var(--bg-primary)] border-l border-[var(--border-subtle)] p-5 overflow-y-auto shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-[#9BB9A2]/20 text-[#9BB9A2] flex items-center justify-center">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold">Spoon Feeder AI Copilot</h2>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    Omniscient read/edit access &amp; Lecture PDF synthesizer
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setShowAiDrawer(false);
+                    setActiveTab('spoon-feeder');
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-[var(--bg-card)] border border-[var(--border-subtle)] text-[11px] text-[#9BB9A2]"
+                >
+                  Full view
+                </button>
+                <button
+                  onClick={() => setShowAiDrawer(false)}
+                  className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <SpoonFeederPanel
+              compact
+              onNavigate={(dest) => {
+                setShowAiDrawer(false);
+                if (dest === 'overview') setActiveTab('dashboard');
+                else if (dest === 'rank') setActiveTab('goals');
+                else setActiveTab(dest as NavTab);
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Mobile Drawer */}
       {mobileMenuOpen && (

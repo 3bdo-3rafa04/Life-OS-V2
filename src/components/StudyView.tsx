@@ -1,11 +1,20 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useLifeOS } from '../context/LifeOSContext.tsx';
 import { StudyItemRecord } from '../types.ts';
+import {
+  parseSchedulePdfClientFallback,
+  synthesizeStudyClientFallback,
+} from '../services/localFreeAiFallback.ts';
 import {
   FileText,
   Plus,
   X,
   Trash2,
+  Paperclip,
+  Sparkles,
+  Upload,
+  Calendar as CalendarIcon,
+  Check,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -31,7 +40,9 @@ export const StudyView: React.FC<StudyViewProps> = ({
     createStudyModule,
     deleteStudyModule,
     createStudyItem,
+    updateStudyItem,
     deleteStudyItem,
+    createKnowledgeItem,
     recordStudyFeedback,
     createCalendarEvent,
   } = useLifeOS();
@@ -46,6 +57,9 @@ export const StudyView: React.FC<StudyViewProps> = ({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [aiSynthesisText, setAiSynthesisText] = useState<string | null>(null);
   const [synthesizing, setSynthesizing] = useState(false);
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const [pdfBannerMessage, setPdfBannerMessage] = useState<string | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   // Modals
   const [showNewModuleModal, setShowNewModuleModal] = useState(false);
@@ -75,6 +89,37 @@ export const StudyView: React.FC<StudyViewProps> = ({
   const [importModuleId, setImportModuleId] = useState('');
   const [importing, setImporting] = useState(false);
   const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
+  const [schedulePdfParsing, setSchedulePdfParsing] = useState(false);
+  const [schedulePdfFileName, setSchedulePdfFileName] = useState<string | null>(null);
+  const [schedulePdfSummary, setSchedulePdfSummary] = useState<string | null>(null);
+  const [extractedLecturesMeta, setExtractedLecturesMeta] = useState<
+    {
+      lectureNumber: number;
+      title: string;
+      estimatedMinutes: number;
+      difficulty: 'HIGH' | 'MEDIUM' | 'LOW';
+      date?: string;
+      startTime?: string;
+      endTime?: string;
+    }[]
+  >([]);
+  const [extractedCalendarEvents, setExtractedCalendarEvents] = useState<
+    {
+      title: string;
+      eventType: 'lecture' | 'exam' | 'study_block' | 'fixed';
+      date: string;
+      startTime: string;
+      endTime: string;
+      location?: string;
+    }[]
+  >([]);
+  const [importEventsToCalendar, setImportEventsToCalendar] = useState(true);
+  const [detectedModuleInfo, setDetectedModuleInfo] = useState<{
+    code?: string;
+    title?: string;
+    examDate?: string;
+  } | null>(null);
+  const schedulePdfInputRef = useRef<HTMLInputElement | null>(null);
 
   const switchTab = (
     tab: 'modules' | 'schedule_import' | 'exams' | 'flashcards' | 'analytics'
@@ -184,20 +229,33 @@ export const StudyView: React.FC<StudyViewProps> = ({
     if (!selectedItem) return;
     setSynthesizing(true);
     try {
-      const res = await fetch('/api/ai/study-synthesis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const rawContent =
+        selectedItem.notes ||
+        selectedItem.backAnswer ||
+        `Study topic: ${selectedItem.title} in module ${selectedItem.moduleCode}`;
+      let data: any;
+      try {
+        const res = await fetch('/api/ai/study-synthesis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            moduleCode: selectedItem.moduleCode,
+            lectureTitle: selectedItem.title,
+            rawContent,
+          }),
+        });
+        if (!res.ok) throw new Error('Fallback to local synthesis');
+        data = await res.json();
+      } catch {
+        data = synthesizeStudyClientFallback({
           moduleCode: selectedItem.moduleCode,
           lectureTitle: selectedItem.title,
-          rawContent:
-            selectedItem.notes ||
-            selectedItem.backAnswer ||
-            `Study topic: ${selectedItem.title} in module ${selectedItem.moduleCode}`,
-        }),
-      });
-      const data = await res.json();
-      setAiSynthesisText(data.sourceSummary || data.result || 'Synthesized summary.');
+          rawContent,
+        });
+      }
+      const summary = data.sourceSummary || data.result || 'Synthesized summary.';
+      setAiSynthesisText(summary);
+      await updateStudyItem(selectedItem.id, { notes: summary });
 
       if (Array.isArray(data.flashcards)) {
         for (const fc of data.flashcards) {
@@ -222,46 +280,324 @@ export const StudyView: React.FC<StudyViewProps> = ({
     }
   };
 
+  const handleLecturePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setPdfUploading(true);
+    setPdfBannerMessage(`Reading "${file.name}" and synthesizing lecture summary + flashcards...`);
+
+    try {
+      const targetMod =
+        studyModules.find((m) => m.id === itemModuleId) || studyModules[0];
+      const moduleCode = targetMod?.code || 'STUDY';
+      const cleanTitle = file.name.replace(/\.(pdf|txt|md)$/i, '');
+
+      const isText =
+        file.type === 'text/plain' ||
+        file.type === 'text/markdown' ||
+        file.name.endsWith('.txt') ||
+        file.name.endsWith('.md');
+
+      const attachmentPayload = await new Promise<{
+        fileName: string;
+        mimeType: string;
+        base64Data?: string;
+        textContent?: string;
+      }>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        if (isText) {
+          reader.onload = () =>
+            resolve({
+              fileName: file.name,
+              mimeType: file.type || 'text/plain',
+              textContent: String(reader.result || ''),
+            });
+          reader.readAsText(file);
+        } else {
+          reader.onload = () => {
+            const str = String(reader.result || '');
+            const idx = str.indexOf(',');
+            resolve({
+              fileName: file.name,
+              mimeType: file.type || 'application/pdf',
+              base64Data: idx >= 0 ? str.slice(idx + 1) : str,
+            });
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      let data: any;
+      try {
+        const res = await fetch('/api/ai/study-synthesis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            moduleCode,
+            lectureTitle: cleanTitle,
+            rawContent: `Synthesize attached lecture file: ${file.name}`,
+            attachment: attachmentPayload,
+          }),
+        });
+        if (!res.ok) throw new Error('Fallback to local PDF synthesis');
+        data = await res.json();
+      } catch {
+        data = synthesizeStudyClientFallback({
+          moduleCode,
+          lectureTitle: cleanTitle,
+          rawContent: `Synthesize attached lecture file: ${file.name}`,
+          attachment: attachmentPayload,
+        });
+      }
+
+      const summaryText =
+        data.sourceSummary || `Synthesized lecture summary for ${cleanTitle}.`;
+      const cards: { frontPrompt: string; backAnswer: string }[] = Array.isArray(data.flashcards)
+        ? data.flashcards
+        : [];
+
+      await createStudyItem({
+        moduleId: targetMod?.id || '',
+        moduleCode,
+        title: cleanTitle,
+        itemType: 'lecture',
+        status: 'studied',
+        importance: 'high',
+        estimatedMinutes: 45,
+        confidenceRating: 4,
+        repetitionCount: 0,
+        nextReviewDate: todayDate,
+        notes: summaryText,
+      });
+
+      for (const fc of cards) {
+        if (!fc.frontPrompt || !fc.backAnswer) continue;
+        await createStudyItem({
+          moduleId: targetMod?.id || '',
+          moduleCode,
+          title: fc.frontPrompt.slice(0, 120),
+          itemType: 'flashcard',
+          status: 'review_due',
+          importance: 'high',
+          estimatedMinutes: 5,
+          confidenceRating: 3,
+          repetitionCount: 0,
+          nextReviewDate: todayDate,
+          frontPrompt: fc.frontPrompt,
+          backAnswer: fc.backAnswer,
+        });
+      }
+
+      await createKnowledgeItem({
+        title: `Lecture Summary: ${cleanTitle}`,
+        itemType: 'note',
+        authorOrSource: file.name,
+        status: 'completed',
+        progressCurrent: 1,
+        progressTotal: 1,
+        progressUnit: 'summary',
+        tags: moduleCode,
+        takeaways: summaryText,
+      });
+
+      setPdfBannerMessage(
+        `✓ Synthesized "${cleanTitle}": saved lecture summary, ${cards.length} active-recall flashcards, and Library note.`
+      );
+    } catch (err) {
+      setPdfBannerMessage(
+        err instanceof Error ? `Error: ${err.message}` : 'Failed to synthesize PDF.'
+      );
+    } finally {
+      setPdfUploading(false);
+    }
+  };
+
+  const processScheduleFile = async (file: File) => {
+    setSchedulePdfParsing(true);
+    setImportSuccessMsg(null);
+    setSchedulePdfFileName(file.name);
+    setSchedulePdfSummary(`Extracting lectures & schedule from "${file.name}"...`);
+
+    try {
+      const targetMod =
+        studyModules.find((m) => m.id === importModuleId) || studyModules[0];
+      const moduleCode = targetMod?.code || 'MOD101';
+
+      const isText =
+        file.type === 'text/plain' ||
+        file.type === 'text/markdown' ||
+        file.type === 'text/csv' ||
+        file.type === 'text/calendar' ||
+        /\.(txt|md|csv|ics)$/i.test(file.name);
+
+      const attachmentPayload = await new Promise<{
+        fileName: string;
+        mimeType: string;
+        base64Data?: string;
+        textContent?: string;
+      }>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Failed to read schedule file'));
+        if (isText) {
+          reader.onload = () =>
+            resolve({
+              fileName: file.name,
+              mimeType: file.type || 'text/plain',
+              textContent: String(reader.result || ''),
+            });
+          reader.readAsText(file);
+        } else {
+          reader.onload = () => {
+            const str = String(reader.result || '');
+            const idx = str.indexOf(',');
+            resolve({
+              fileName: file.name,
+              mimeType: file.type || 'application/pdf',
+              base64Data: idx >= 0 ? str.slice(idx + 1) : str,
+            });
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      let data: any;
+      try {
+        const res = await fetch('/api/ai/parse-schedule-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            attachment: attachmentPayload,
+            moduleCode,
+            todayDate,
+          }),
+        });
+        if (!res.ok) throw new Error('Fallback to local PDF parser');
+        data = await res.json();
+      } catch {
+        data = parseSchedulePdfClientFallback({
+          attachment: attachmentPayload,
+          moduleCode,
+          todayDate,
+        });
+      }
+
+      const parsedLectures = Array.isArray(data.lectures) ? data.lectures : [];
+      const parsedEvents = Array.isArray(data.calendarEvents) ? data.calendarEvents : [];
+
+      setExtractedLecturesMeta(parsedLectures);
+      setExtractedCalendarEvents(parsedEvents);
+      setDetectedModuleInfo({
+        code: data.detectedModuleCode,
+        title: data.detectedModuleTitle,
+        examDate: data.detectedExamDate,
+      });
+
+      if (parsedLectures.length > 0) {
+        setImportText(parsedLectures.map((l: { title: string }) => l.title).join('\n'));
+      }
+      setSchedulePdfSummary(
+        data.summary ||
+          `Extracted ${parsedLectures.length} lectures${
+            parsedEvents.length > 0 ? ` and ${parsedEvents.length} calendar events` : ''
+          } from "${file.name}".`
+      );
+    } catch (err) {
+      setSchedulePdfSummary(
+        err instanceof Error ? `Error: ${err.message}` : 'Failed to parse schedule PDF.'
+      );
+    } finally {
+      setSchedulePdfParsing(false);
+    }
+  };
+
+  const handleSchedulePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    await processScheduleFile(file);
+  };
+
   const handleImportScheduleLines = async () => {
     const lines = importText
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean);
-    if (lines.length === 0) return;
+    if (lines.length === 0 && extractedCalendarEvents.length === 0) return;
     setImporting(true);
     try {
       const targetMod =
         studyModules.find((m) => m.id === importModuleId) || studyModules[0];
       let modId = targetMod?.id || '';
-      const modCodeStr = targetMod?.code || 'MOD';
+      const modCodeStr =
+        targetMod?.code || detectedModuleInfo?.code || 'IMP101';
 
-      if (!modId) {
+      if (!modId && lines.length > 0) {
         modId = await createStudyModule({
-          code: 'IMP101',
-          title: 'Imported Study Module',
+          code: modCodeStr,
+          title: detectedModuleInfo?.title || 'Imported Study Module',
           term: 'Current Term',
-          examDate: todayDate,
+          examDate: detectedModuleInfo?.examDate || todayDate,
           totalLectures: lines.length,
           completedLectures: 0,
         });
       }
 
-      for (const line of lines) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const meta = extractedLecturesMeta.find(
+          (m) => m.title.toLowerCase() === line.toLowerCase()
+        ) || extractedLecturesMeta[i];
+
         await createStudyItem({
           moduleId: modId,
           moduleCode: modCodeStr,
           title: line.slice(0, 180),
           itemType: 'lecture',
           status: 'unstudied',
-          importance: 'high',
-          estimatedMinutes: 45,
+          importance:
+            meta?.difficulty === 'LOW'
+              ? 'low'
+              : meta?.difficulty === 'MEDIUM'
+              ? 'medium'
+              : 'high',
+          estimatedMinutes: meta?.estimatedMinutes || 45,
           confidenceRating: 3,
           repetitionCount: 0,
           nextReviewDate: todayDate,
+          notes: meta?.date
+            ? `Scheduled in PDF: ${meta.date}${meta.startTime ? ` (${meta.startTime}${meta.endTime ? `–${meta.endTime}` : ''})` : ''}`
+            : undefined,
         });
       }
-      setImportSuccessMsg(`Imported ${lines.length} lectures into your Study workspace.`);
+
+      let importedEventCount = 0;
+      if (importEventsToCalendar && extractedCalendarEvents.length > 0) {
+        for (const ev of extractedCalendarEvents) {
+          await createCalendarEvent({
+            title: ev.title.slice(0, 140),
+            eventType: ev.eventType || 'lecture',
+            date: ev.date || todayDate,
+            startTime: ev.startTime || '09:00',
+            endTime: ev.endTime || '10:00',
+            location: ev.location || 'University / Study Desk',
+            isProtectedAnchor: ev.eventType === 'exam' || ev.eventType === 'fixed',
+          });
+          importedEventCount++;
+        }
+      }
+
+      setImportSuccessMsg(
+        `Imported ${lines.length} lectures into Study${
+          importedEventCount > 0 ? ` and ${importedEventCount} events into Calendar` : ''
+        }.`
+      );
       setImportText('');
+      setExtractedLecturesMeta([]);
+      setExtractedCalendarEvents([]);
+      setSchedulePdfFileName(null);
     } finally {
       setImporting(false);
     }
@@ -272,6 +608,21 @@ export const StudyView: React.FC<StudyViewProps> = ({
 
   return (
     <div className="space-y-5">
+      <input
+        ref={pdfInputRef}
+        type="file"
+        accept=".pdf,application/pdf,.txt,.md"
+        onChange={handleLecturePdfUpload}
+        className="hidden"
+      />
+      <input
+        ref={schedulePdfInputRef}
+        type="file"
+        accept=".pdf,application/pdf,.txt,.md,.csv,.ics"
+        onChange={handleSchedulePdfUpload}
+        className="hidden"
+      />
+
       {/* Header + Sub-page Tabs */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -308,6 +659,14 @@ export const StudyView: React.FC<StudyViewProps> = ({
           </div>
 
           <button
+            onClick={() => pdfInputRef.current?.click()}
+            disabled={pdfUploading}
+            className="px-3.5 py-2 rounded-xl bg-[#9BB9A2]/20 border border-[#9BB9A2]/50 hover:bg-[#9BB9A2]/30 text-[#9BB9A2] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <Paperclip className="w-3.5 h-3.5" />
+            {pdfUploading ? 'Synthesizing PDF...' : 'Upload Lecture PDF'}
+          </button>
+          <button
             onClick={() => setShowNewModuleModal(true)}
             className="px-3.5 py-2 rounded-xl bg-[#2C3932] hover:bg-[#35453C] text-[#E8EDE8] text-xs font-medium"
           >
@@ -321,6 +680,21 @@ export const StudyView: React.FC<StudyViewProps> = ({
           </button>
         </div>
       </div>
+
+      {pdfBannerMessage && (
+        <div className="p-3.5 rounded-xl bg-[#2C3932] border border-[#9BB9A2]/40 flex items-center justify-between gap-3 text-xs text-[#E8EDE8]">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-[#9BB9A2] shrink-0" />
+            <span>{pdfBannerMessage}</span>
+          </div>
+          <button
+            onClick={() => setPdfBannerMessage(null)}
+            className="text-[#9AA79E] hover:text-[#E8EDE8]"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* TAB 1: MODULES */}
       {activeTab === 'modules' && (
@@ -604,14 +978,59 @@ export const StudyView: React.FC<StudyViewProps> = ({
       {activeTab === 'schedule_import' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           <div className="lg:col-span-5 sage-card p-5 space-y-4">
-            <div>
-              <h2 className="text-sm font-semibold text-[#E8EDE8]">
-                1. Paste or import lecture list
-              </h2>
-              <p className="text-xs text-[#9AA79E] mt-0.5">
-                Enter one lecture topic per line to batch-create study items
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-[#E8EDE8]">
+                  1. Upload Schedule PDF or paste lecture list
+                </h2>
+                <p className="text-xs text-[#9AA79E] mt-0.5">
+                  Import a syllabus, university timetable, or exam schedule PDF (or paste lines below)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => schedulePdfInputRef.current?.click()}
+                disabled={schedulePdfParsing}
+                className="px-3 py-1.5 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold hover:bg-[#a9c5b0] transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                {schedulePdfParsing ? 'Parsing PDF...' : 'Upload PDF'}
+              </button>
+            </div>
+
+            {/* PDF Drag & Drop / Click Dropzone */}
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const droppedFile = e.dataTransfer.files?.[0];
+                if (droppedFile) {
+                  processScheduleFile(droppedFile);
+                }
+              }}
+              onClick={() => schedulePdfInputRef.current?.click()}
+              className="p-4 rounded-xl border border-dashed border-[#9BB9A2]/40 bg-[#2C3932]/50 hover:bg-[#2C3932]/80 hover:border-[#9BB9A2] cursor-pointer transition-all text-center space-y-1.5"
+            >
+              <div className="w-9 h-9 rounded-xl bg-[#9BB9A2]/15 text-[#9BB9A2] flex items-center justify-center mx-auto">
+                <FileText className="w-4 h-4" />
+              </div>
+              <p className="text-xs font-semibold text-[#E8EDE8]">
+                {schedulePdfParsing
+                  ? `Reading & extracting "${schedulePdfFileName}"...`
+                  : schedulePdfFileName
+                  ? `Loaded: ${schedulePdfFileName}`
+                  : 'Click or drop a Schedule / Syllabus PDF here'}
+              </p>
+              <p className="text-[11px] text-[#9AA79E]">
+                Accepts <strong className="text-[#9BB9A2]">.pdf</strong>, .txt, .md, .csv, .ics · Automatically extracts lecture sequence, durations &amp; calendar dates
               </p>
             </div>
+
+            {schedulePdfSummary && (
+              <div className="p-3 rounded-xl bg-[#9BB9A2]/12 border border-[#9BB9A2]/30 text-xs text-[#E8EDE8]">
+                {schedulePdfSummary}
+              </div>
+            )}
 
             {studyModules.length > 0 && (
               <div>
@@ -630,53 +1049,131 @@ export const StudyView: React.FC<StudyViewProps> = ({
               </div>
             )}
 
-            <textarea
-              rows={7}
-              value={importText}
-              onChange={(e) => setImportText(e.target.value)}
-              placeholder={'Lecture 01: Introduction\nLecture 02: Core Mechanisms\nLecture 03: Clinical Applications'}
-              className="w-full sage-input p-3.5 text-xs"
-            />
+            <div>
+              <label className="block text-xs text-[#9AA79E] mb-1">
+                Extracted / Editable Lecture List (one per line)
+              </label>
+              <textarea
+                rows={6}
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder={'Lecture 01: Introduction\nLecture 02: Core Mechanisms\nLecture 03: Clinical Applications'}
+                className="w-full sage-input p-3.5 text-xs"
+              />
+            </div>
+
+            {extractedCalendarEvents.length > 0 && (
+              <label className="flex items-center gap-2 text-xs text-[#E8EDE8] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={importEventsToCalendar}
+                  onChange={(e) => setImportEventsToCalendar(e.target.checked)}
+                  className="rounded accent-[#9BB9A2]"
+                />
+                <span>
+                  Also add <strong>{extractedCalendarEvents.length}</strong> extracted class/exam slots directly to Calendar
+                </span>
+              </label>
+            )}
 
             {importSuccessMsg && (
-              <p className="text-xs text-[#9BB9A2]">{importSuccessMsg}</p>
+              <p className="text-xs text-[#9BB9A2] font-medium flex items-center gap-1.5">
+                <Check className="w-3.5 h-3.5" /> {importSuccessMsg}
+              </p>
             )}
 
             <button
               onClick={handleImportScheduleLines}
-              disabled={importing || !importText.trim()}
+              disabled={
+                importing ||
+                schedulePdfParsing ||
+                (!importText.trim() && extractedCalendarEvents.length === 0)
+              }
               className="w-full py-2.5 rounded-xl bg-[#9BB9A2] text-[#171E1B] text-xs font-semibold disabled:opacity-50"
             >
-              {importing ? 'Importing...' : 'Confirm & create lectures'}
+              {importing
+                ? 'Importing schedule...'
+                : extractedCalendarEvents.length > 0 && importEventsToCalendar
+                ? `Confirm & import lectures + ${extractedCalendarEvents.length} calendar events`
+                : 'Confirm & create lectures'}
             </button>
           </div>
 
-          <div className="lg:col-span-7 sage-card p-5">
-            <h2 className="text-sm font-semibold text-[#E8EDE8] mb-3">
-              2. Preview lines to import
-            </h2>
-            {importText.trim() ? (
-              <div className="space-y-2">
-                {importText
-                  .split('\n')
-                  .map((l) => l.trim())
-                  .filter(Boolean)
-                  .map((line, idx) => (
+          <div className="lg:col-span-7 sage-card p-5 space-y-5">
+            <div>
+              <h2 className="text-sm font-semibold text-[#E8EDE8] mb-3">
+                2. Preview extracted schedule items
+              </h2>
+              {importText.trim() ? (
+                <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                  {importText
+                    .split('\n')
+                    .map((l) => l.trim())
+                    .filter(Boolean)
+                    .map((line, idx) => {
+                      const meta = extractedLecturesMeta[idx];
+                      return (
+                        <div
+                          key={idx}
+                          className="p-3 rounded-xl bg-[#2C3932]/75 flex items-center justify-between gap-2 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <span className="text-[#E8EDE8] font-medium block truncate">
+                              {line}
+                            </span>
+                            {meta && (
+                              <span className="text-[10px] text-[#9AA79E]">
+                                Est. {meta.estimatedMinutes || 45}m · Difficulty: {meta.difficulty || 'MEDIUM'}
+                                {meta.date ? ` · Date: ${meta.date}` : ''}
+                                {meta.startTime ? ` (${meta.startTime})` : ''}
+                              </span>
+                            )}
+                          </div>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#9BB9A2]/20 text-[#9BB9A2] shrink-0">
+                            Seq #{idx + 1}
+                          </span>
+                        </div>
+                      );
+                    })}
+                </div>
+              ) : (
+                <div className="py-10 text-center text-xs text-[#65756B]">
+                  <FileText className="w-7 h-7 text-[#9BB9A2] mx-auto mb-2 opacity-60" />
+                  Upload a Schedule PDF or paste lecture titles on the left to preview extracted items before saving.
+                </div>
+              )}
+            </div>
+
+            {extractedCalendarEvents.length > 0 && (
+              <div className="pt-3 border-t border-[#BDD3C1]/12">
+                <div className="flex items-center justify-between mb-2.5">
+                  <h3 className="text-xs font-semibold text-[#E8EDE8] flex items-center gap-1.5">
+                    <CalendarIcon className="w-3.5 h-3.5 text-[#9BB9A2]" />
+                    Extracted Timetable / Calendar Slots ({extractedCalendarEvents.length})
+                  </h3>
+                  <span className="text-[10px] text-[#9BB9A2]">
+                    {importEventsToCalendar ? 'Will be added to Calendar' : 'Calendar import unchecked'}
+                  </span>
+                </div>
+                <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
+                  {extractedCalendarEvents.map((ev, i) => (
                     <div
-                      key={idx}
-                      className="p-3 rounded-xl bg-[#2C3932]/75 flex items-center justify-between text-xs"
+                      key={i}
+                      className="p-2.5 rounded-xl bg-[#222C27] border border-[#BDD3C1]/12 flex items-center justify-between text-xs"
                     >
-                      <span className="text-[#E8EDE8] font-medium">{line}</span>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#9BB9A2]/20 text-[#9BB9A2]">
-                        Ready
+                      <div>
+                        <p className="font-medium text-[#E8EDE8]">{ev.title}</p>
+                        <p className="text-[10px] text-[#9AA79E]">
+                          {ev.date} · {ev.startTime}–{ev.endTime} ·{' '}
+                          <span className="uppercase text-[#9BB9A2]">{ev.eventType}</span>
+                        </p>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#9BB9A2]/15 text-[#9BB9A2]">
+                        {ev.startTime}
                       </span>
                     </div>
                   ))}
-              </div>
-            ) : (
-              <div className="py-12 text-center text-xs text-[#65756B]">
-                <FileText className="w-7 h-7 text-[#9BB9A2] mx-auto mb-2 opacity-60" />
-                Paste lecture titles on the left to preview extracted items before saving.
+                </div>
               </div>
             )}
           </div>

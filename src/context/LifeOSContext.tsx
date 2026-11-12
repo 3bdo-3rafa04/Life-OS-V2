@@ -30,7 +30,28 @@ import {
   GoalHabitRecord,
   AiActionLogRecord,
   DailyReviewRecord,
+  PomodoroMode,
+  PomodoroCategory,
+  PomodoroSessionRecord,
+  PomodoroTimerState,
 } from '../types.ts';
+import {
+  PersistentMemoryStore,
+  ScheduleGenerationResult,
+  AdaptiveRescheduleResponse,
+  EnergyProfileConfig,
+  LearnedPreferenceRule,
+  SessionFeedbackEntry,
+  EnergyLevel,
+  createDefaultPersistentMemory,
+  getNowInTimezone,
+  generateContextAwareSchedule,
+  runAdaptiveReschedule,
+  applySessionFeedbackToMemory,
+  parseTimeToMinutes,
+  formatMinutesToTime,
+  addDaysToDateStr,
+} from '../services/schedulingEngine.ts';
 
 interface LifeOSContextValue {
   user: User | null;
@@ -46,7 +67,13 @@ interface LifeOSContextValue {
   goalsHabits: GoalHabitRecord[];
   aiLogs: AiActionLogRecord[];
   dailyReviews: DailyReviewRecord[];
+  pomodoroState: PomodoroTimerState;
+  pomodoroSessions: PomodoroSessionRecord[];
   todayDate: string;
+  currentTimeStr: string;
+  timezone: string;
+  persistentMemory: PersistentMemoryStore;
+  activeScheduleProposal: ScheduleGenerationResult | null;
   signIn: () => Promise<void>;
   logOut: () => Promise<void>;
   updateProfileSettings: (partial: Partial<UserProfile>) => Promise<void>;
@@ -64,10 +91,22 @@ interface LifeOSContextValue {
   ) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   createCalendarEvent: (data: Omit<CalendarEventItem, 'id' | 'ownerId'>) => Promise<void>;
+  updateCalendarEvent: (
+    eventId: string,
+    partial: Partial<Omit<CalendarEventItem, 'id' | 'ownerId'>>
+  ) => Promise<void>;
   deleteCalendarEvent: (eventId: string) => Promise<void>;
   createStudyModule: (data: Omit<StudyModuleItem, 'id' | 'ownerId'>) => Promise<string>;
+  updateStudyModule: (
+    moduleId: string,
+    partial: Partial<Omit<StudyModuleItem, 'id' | 'ownerId'>>
+  ) => Promise<void>;
   deleteStudyModule: (moduleId: string) => Promise<void>;
   createStudyItem: (data: Omit<StudyItemRecord, 'id' | 'ownerId'>) => Promise<void>;
+  updateStudyItem: (
+    itemId: string,
+    partial: Partial<Omit<StudyItemRecord, 'id' | 'ownerId' | 'moduleId'>>
+  ) => Promise<void>;
   deleteStudyItem: (itemId: string) => Promise<void>;
   recordStudyFeedback: (
     item: StudyItemRecord,
@@ -78,10 +117,22 @@ interface LifeOSContextValue {
     data: Omit<HealthLogRecord, 'id' | 'ownerId'>,
     scheduleOnCalendar?: boolean
   ) => Promise<void>;
+  updateHealthLog: (
+    logId: string,
+    partial: Partial<Omit<HealthLogRecord, 'id' | 'ownerId'>>
+  ) => Promise<void>;
   deleteHealthLog: (logId: string) => Promise<void>;
   createFinanceRecord: (data: Omit<FinanceRecordItem, 'id' | 'ownerId'>) => Promise<void>;
+  updateFinanceRecord: (
+    recordId: string,
+    partial: Partial<Omit<FinanceRecordItem, 'id' | 'ownerId'>>
+  ) => Promise<void>;
   deleteFinanceRecord: (recordId: string) => Promise<void>;
   createKnowledgeItem: (data: Omit<KnowledgeItemRecord, 'id' | 'ownerId'>) => Promise<void>;
+  updateKnowledgeItem: (
+    itemId: string,
+    partial: Partial<Omit<KnowledgeItemRecord, 'id' | 'ownerId'>>
+  ) => Promise<void>;
   updateKnowledgeProgress: (
     item: KnowledgeItemRecord,
     newCurrent: number,
@@ -89,6 +140,10 @@ interface LifeOSContextValue {
   ) => Promise<void>;
   deleteKnowledgeItem: (itemId: string) => Promise<void>;
   createGoalHabit: (data: Omit<GoalHabitRecord, 'id' | 'ownerId'>) => Promise<void>;
+  updateGoalHabit: (
+    recordId: string,
+    partial: Partial<Omit<GoalHabitRecord, 'id' | 'ownerId'>>
+  ) => Promise<void>;
   toggleHabitOrGoalCompletion: (record: GoalHabitRecord) => Promise<void>;
   deleteGoalHabit: (recordId: string) => Promise<void>;
   redeemReward: (reward: GoalHabitRecord) => Promise<void>;
@@ -100,6 +155,49 @@ interface LifeOSContextValue {
   deleteAiLog: (logId: string) => Promise<void>;
   saveDailyReview: (data: Omit<DailyReviewRecord, 'id' | 'ownerId'>) => Promise<void>;
   clearAllWorkspaceData: () => Promise<void>;
+  // Background Pomodoro & Study Time Engine
+  startPomodoro: () => void;
+  pausePomodoro: () => void;
+  togglePomodoro: () => void;
+  resetPomodoro: () => void;
+  switchPomodoroMode: (mode: PomodoroMode) => void;
+  updatePomodoroConfig: (partial: Partial<PomodoroTimerState>) => void;
+  completePomodoroSession: (customMinutes?: number, notes?: string) => Promise<void>;
+  deletePomodoroSession: (sessionId: string, firestoreLogId?: string) => Promise<void>;
+  requestPomodoroNotificationPermission: () => Promise<boolean>;
+  dismissPomodoroAlert: () => void;
+  // Context-Aware Scheduling Engine & Persistent Intelligent Memory
+  generateSmartSchedule: (options?: {
+    targetDays?: number;
+    startDateStr?: string;
+    dailyMaxHoursOverride?: Record<string, number>;
+    energyOverrideByDate?: Record<string, EnergyLevel>;
+  }) => Promise<ScheduleGenerationResult>;
+  adaptSmartSchedule: (utterance: string) => Promise<AdaptiveRescheduleResponse>;
+  setScheduleProposal: (proposal: ScheduleGenerationResult | null) => void;
+  approveProposedScheduleBlock: (blockId: string) => Promise<void>;
+  approveAllProposedScheduleBlocks: () => Promise<void>;
+  modifyProposedScheduleBlock: (
+    blockId: string,
+    changes: {
+      startTime?: string;
+      durationMinutes?: number;
+      dateStr?: string;
+      status?: 'proposed' | 'approved' | 'completed' | 'skipped';
+    }
+  ) => void;
+  recordActivityFeedback: (
+    feedback: Omit<SessionFeedbackEntry, 'id' | 'recordedAt'> & {
+      blockId?: string;
+      sourceType?: string;
+      sourceId?: string;
+    }
+  ) => Promise<void>;
+  updateEnergyProfile: (partial: Partial<EnergyProfileConfig>) => Promise<void>;
+  addOrUpdateLearnedRule: (rule: LearnedPreferenceRule) => Promise<void>;
+  confirmLearnedRule: (ruleId: string) => Promise<void>;
+  deleteLearnedRule: (ruleId: string) => Promise<void>;
+  resetPersistentMemory: () => Promise<void>;
 }
 
 const LifeOSContext = createContext<LifeOSContextValue | undefined>(undefined);
@@ -155,9 +253,121 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [goalsHabits, setGoalsHabits] = useState<GoalHabitRecord[]>([]);
   const [aiLogs, setAiLogs] = useState<AiActionLogRecord[]>([]);
   const [dailyReviews, setDailyReviews] = useState<DailyReviewRecord[]>([]);
+  const [localPomodoroSessions, setLocalPomodoroSessions] = useState<PomodoroSessionRecord[]>(() => {
+    try {
+      const raw = localStorage.getItem('lifeos_pomodoro_sessions_v1');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
 
+  const [pomodoroState, setPomodoroState] = useState<PomodoroTimerState>(() => {
+    const defaultState: PomodoroTimerState = {
+      running: false,
+      mode: 'focus',
+      category: 'Deep Study',
+      totalDurationSeconds: 25 * 60,
+      remainingSeconds: 25 * 60,
+      elapsedFocusSeconds: 0,
+      sessionNumber: 1,
+      focusMinutesPreset: 25,
+      shortBreakMinutesPreset: 5,
+      longBreakMinutesPreset: 15,
+      autoStartBreaks: false,
+      autoStartFocus: false,
+      soundEnabled: true,
+      browserNotificationsEnabled:
+        typeof window !== 'undefined' &&
+        'Notification' in window &&
+        Notification.permission === 'granted',
+      linkedModuleId: '',
+      linkedStudyItemId: '',
+      linkedTaskId: '',
+      customLabel: '',
+      liveAlert: null,
+    };
+    try {
+      const saved = localStorage.getItem('lifeos_pomodoro_timer_v1');
+      if (!saved) return defaultState;
+      const parsed = JSON.parse(saved);
+      return {
+        ...defaultState,
+        ...parsed,
+        running: false, // Pause on fresh boot so user is in control, or resume if targetEndMs valid
+        liveAlert: null,
+      };
+    } catch {
+      return defaultState;
+    }
+  });
+
+  const lastTickMsRef = useRef<number | null>(null);
   const purgedRef = useRef(false);
-  const todayDate = new Date().toISOString().split('T')[0];
+
+  const [serverTimeState, setServerTimeState] = useState(() => getNowInTimezone('Africa/Cairo'));
+  const timezone = profile?.timezone || 'Africa/Cairo';
+  const todayDate = serverTimeState.dateStr;
+  const currentTimeStr = serverTimeState.timeStr;
+
+  const [persistentMemory, setPersistentMemory] = useState<PersistentMemoryStore>(() => {
+    try {
+      const saved = localStorage.getItem('lifeos_persistent_memory_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...createDefaultPersistentMemory('Africa/Cairo'),
+          ...parsed,
+          userProfile: {
+            ...createDefaultPersistentMemory('Africa/Cairo').userProfile,
+            ...(parsed.userProfile || {}),
+          },
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return createDefaultPersistentMemory('Africa/Cairo');
+  });
+
+  const [activeScheduleProposal, setActiveScheduleProposal] =
+    useState<ScheduleGenerationResult | null>(() => {
+      try {
+        const saved = localStorage.getItem('lifeos_active_schedule_proposal_v1');
+        return saved ? JSON.parse(saved) : null;
+      } catch {
+        return null;
+      }
+    });
+
+  // Poll authoritative server time every 30s in the user's configured timezone (default Africa/Cairo)
+  useEffect(() => {
+    let active = true;
+    const syncTime = async () => {
+      const tz = profile?.timezone || 'Africa/Cairo';
+      try {
+        const res = await fetch(`/api/time?timezone=${encodeURIComponent(tz)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (active && data?.dateStr) {
+            setServerTimeState(data);
+            return;
+          }
+        }
+      } catch {
+        // Fallback to local Intl calculation for Africa/Cairo
+      }
+      if (active) {
+        setServerTimeState(getNowInTimezone(tz));
+      }
+    };
+    syncTime();
+    const id = setInterval(syncTime, 30000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [profile?.timezone]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (currUser) => {
@@ -172,7 +382,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               uid: currUser.uid,
               displayName: sanitizeString(currUser.displayName || 'Life OS User', 100, 'User'),
               currency: 'EGP',
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+              timezone: 'Africa/Cairo',
               city: 'Cairo',
               prayerMethod: 'Egypt' as const,
               prayerBufferMinutes: 15,
@@ -1009,6 +1219,188 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const updateCalendarEvent = async (
+    eventId: string,
+    partial: Partial<Omit<CalendarEventItem, 'id' | 'ownerId'>>
+  ) => {
+    if (!user) return;
+    try {
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
+      if (partial.eventType !== undefined) payload.eventType = partial.eventType;
+      if (partial.date !== undefined) payload.date = sanitizeString(partial.date, 16);
+      if (partial.startTime !== undefined) payload.startTime = sanitizeString(partial.startTime, 10);
+      if (partial.endTime !== undefined) payload.endTime = sanitizeString(partial.endTime, 10);
+      if (partial.location !== undefined) payload.location = sanitizeString(partial.location, 200);
+      if (partial.isProtectedAnchor !== undefined) {
+        payload.isProtectedAnchor = Boolean(partial.isProtectedAnchor);
+      }
+      await updateDoc(doc(db, 'calendar_events', eventId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `calendar_events/${eventId}`);
+    }
+  };
+
+  const updateStudyModule = async (
+    moduleId: string,
+    partial: Partial<Omit<StudyModuleItem, 'id' | 'ownerId'>>
+  ) => {
+    if (!user) return;
+    try {
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (partial.code !== undefined) payload.code = sanitizeString(partial.code, 32);
+      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
+      if (partial.term !== undefined) payload.term = sanitizeString(partial.term, 64);
+      if (partial.examDate !== undefined) payload.examDate = sanitizeString(partial.examDate, 32);
+      if (partial.targetGrade !== undefined) {
+        payload.targetGrade = sanitizeString(partial.targetGrade, 16);
+      }
+      if (partial.totalLectures !== undefined) {
+        payload.totalLectures = Math.max(0, Math.min(500, Math.round(partial.totalLectures)));
+      }
+      if (partial.completedLectures !== undefined) {
+        payload.completedLectures = Math.max(
+          0,
+          Math.min(500, Math.round(partial.completedLectures))
+        );
+      }
+      await updateDoc(doc(db, 'study_modules', moduleId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `study_modules/${moduleId}`);
+    }
+  };
+
+  const updateStudyItem = async (
+    itemId: string,
+    partial: Partial<Omit<StudyItemRecord, 'id' | 'ownerId' | 'moduleId'>>
+  ) => {
+    if (!user) return;
+    try {
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
+      if (partial.status !== undefined) payload.status = partial.status;
+      if (partial.importance !== undefined) payload.importance = partial.importance;
+      if (partial.estimatedMinutes !== undefined) {
+        payload.estimatedMinutes = Math.max(1, Math.min(600, Math.round(partial.estimatedMinutes)));
+      }
+      if (partial.confidenceRating !== undefined) {
+        payload.confidenceRating = Math.max(1, Math.min(5, Math.round(partial.confidenceRating)));
+      }
+      if (partial.nextReviewDate !== undefined) {
+        payload.nextReviewDate = sanitizeString(partial.nextReviewDate, 32);
+      }
+      if (partial.notes !== undefined) payload.notes = sanitizeString(partial.notes, 4000);
+      if (partial.frontPrompt !== undefined) {
+        payload.frontPrompt = sanitizeString(partial.frontPrompt, 500);
+      }
+      if (partial.backAnswer !== undefined) {
+        payload.backAnswer = sanitizeString(partial.backAnswer, 2000);
+      }
+      await updateDoc(doc(db, 'study_items', itemId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `study_items/${itemId}`);
+    }
+  };
+
+  const updateHealthLog = async (
+    logId: string,
+    partial: Partial<Omit<HealthLogRecord, 'id' | 'ownerId'>>
+  ) => {
+    if (!user) return;
+    try {
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
+      if (partial.date !== undefined) payload.date = sanitizeString(partial.date, 16);
+      if (partial.weightKg !== undefined) payload.weightKg = Number(partial.weightKg);
+      if (partial.durationMinutes !== undefined) {
+        payload.durationMinutes = Math.round(partial.durationMinutes);
+      }
+      if (partial.calories !== undefined) payload.calories = Math.round(partial.calories);
+      if (partial.proteinGrams !== undefined) {
+        payload.proteinGrams = Math.round(partial.proteinGrams);
+      }
+      if (partial.notes !== undefined) payload.notes = sanitizeString(partial.notes, 1000);
+      await updateDoc(doc(db, 'health_logs', logId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `health_logs/${logId}`);
+    }
+  };
+
+  const updateFinanceRecord = async (
+    recordId: string,
+    partial: Partial<Omit<FinanceRecordItem, 'id' | 'ownerId'>>
+  ) => {
+    if (!user) return;
+    try {
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
+      if (partial.category !== undefined) payload.category = sanitizeString(partial.category, 64);
+      if (partial.accountName !== undefined) {
+        payload.accountName = sanitizeString(partial.accountName, 64);
+      }
+      if (partial.amountMinor !== undefined) {
+        payload.amountMinor = Math.max(0, Math.round(partial.amountMinor));
+      }
+      if (partial.date !== undefined) payload.date = sanitizeString(partial.date, 16);
+      if (partial.notes !== undefined) payload.notes = sanitizeString(partial.notes, 1000);
+      await updateDoc(doc(db, 'finance_records', recordId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `finance_records/${recordId}`);
+    }
+  };
+
+  const updateKnowledgeItem = async (
+    itemId: string,
+    partial: Partial<Omit<KnowledgeItemRecord, 'id' | 'ownerId'>>
+  ) => {
+    if (!user) return;
+    try {
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
+      if (partial.authorOrSource !== undefined) {
+        payload.authorOrSource = sanitizeString(partial.authorOrSource, 150);
+      }
+      if (partial.status !== undefined) payload.status = partial.status;
+      if (partial.progressCurrent !== undefined) {
+        payload.progressCurrent = Math.max(0, Math.round(partial.progressCurrent));
+      }
+      if (partial.progressTotal !== undefined) {
+        payload.progressTotal = Math.max(1, Math.round(partial.progressTotal));
+      }
+      if (partial.takeaways !== undefined) {
+        payload.takeaways = sanitizeString(partial.takeaways, 4000);
+      }
+      if (partial.tags !== undefined) payload.tags = sanitizeString(partial.tags, 200);
+      await updateDoc(doc(db, 'knowledge_items', itemId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `knowledge_items/${itemId}`);
+    }
+  };
+
+  const updateGoalHabit = async (
+    recordId: string,
+    partial: Partial<Omit<GoalHabitRecord, 'id' | 'ownerId'>>
+  ) => {
+    if (!user) return;
+    try {
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
+      if (partial.whyReason !== undefined) {
+        payload.whyReason = sanitizeString(partial.whyReason, 500);
+      }
+      if (partial.status !== undefined) payload.status = partial.status;
+      if (partial.progressPercent !== undefined) {
+        payload.progressPercent = Math.max(0, Math.min(100, Math.round(partial.progressPercent)));
+      }
+      if (partial.completedToday !== undefined) {
+        payload.completedToday = Boolean(partial.completedToday);
+      }
+      await updateDoc(doc(db, 'goals_habits', recordId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `goals_habits/${recordId}`);
+    }
+  };
+
   const clearAllWorkspaceData = async () => {
     if (!user) return;
     for (const s of studyItems) {
@@ -1041,6 +1433,851 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     for (const r of dailyReviews) {
       await deleteDoc(doc(db, 'daily_reviews', r.id)).catch(() => {});
     }
+    setLocalPomodoroSessions([]);
+    try {
+      localStorage.removeItem('lifeos_pomodoro_sessions_v1');
+    } catch {
+      // ignore
+    }
+  };
+
+  // Combine Firestore-persisted pomodoro sessions (stored in ai_action_logs with toolName === 'pomodoro_session')
+  // with local sessions so study time is 100% persistent across devices and refreshes.
+  const pomodoroSessions: PomodoroSessionRecord[] = React.useMemo(() => {
+    const byId = new Map<string, PomodoroSessionRecord>();
+    for (const s of localPomodoroSessions) {
+      byId.set(s.id, s);
+    }
+    for (const log of aiLogs) {
+      if (log.toolName === 'pomodoro_session' && log.payloadJson) {
+        try {
+          const parsed = JSON.parse(log.payloadJson) as PomodoroSessionRecord;
+          if (parsed && parsed.id) {
+            byId.set(parsed.id, { ...parsed, firestoreLogId: log.id });
+          }
+        } catch {
+          // ignore malformed payload
+        }
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      b.completedAt.localeCompare(a.completedAt)
+    );
+  }, [localPomodoroSessions, aiLogs]);
+
+  // Filter out internal pomodoro_session and persistent_memory records from visible AI Action Logs
+  const visibleAiLogs = React.useMemo(
+    () =>
+      aiLogs.filter(
+        (l) => l.toolName !== 'pomodoro_session' && l.toolName !== 'persistent_memory'
+      ),
+    [aiLogs]
+  );
+
+  // Hydrate persistentMemory from Firestore ai_action_logs if a newer remote memory snapshot exists
+  useEffect(() => {
+    const memLogs = aiLogs.filter(
+      (l) => l.toolName === 'persistent_memory' && Boolean(l.payloadJson)
+    );
+    if (memLogs.length === 0) return;
+    for (const log of memLogs) {
+      if (!log.payloadJson) continue;
+      try {
+        const parsed = JSON.parse(log.payloadJson) as PersistentMemoryStore;
+        if (parsed && parsed.updatedAt) {
+          setPersistentMemory((prev) => {
+            if (!prev.updatedAt || parsed.updatedAt > prev.updatedAt) {
+              try {
+                localStorage.setItem('lifeos_persistent_memory_v1', JSON.stringify(parsed));
+              } catch {
+                // ignore
+              }
+              return parsed;
+            }
+            return prev;
+          });
+        }
+      } catch {
+        // ignore malformed json
+      }
+    }
+  }, [aiLogs]);
+
+  const persistMemoryStore = async (nextMem: PersistentMemoryStore, summaryNote: string) => {
+    const stamped = { ...nextMem, updatedAt: new Date().toISOString() };
+    setPersistentMemory(stamped);
+    try {
+      localStorage.setItem('lifeos_persistent_memory_v1', JSON.stringify(stamped));
+    } catch {
+      // ignore
+    }
+    if (user) {
+      const existingMemLog = aiLogs.find((l) => l.toolName === 'persistent_memory');
+      const compactJson = JSON.stringify(stamped).slice(0, 3950);
+      if (existingMemLog) {
+        try {
+          await updateDoc(doc(db, 'ai_action_logs', existingMemLog.id), {
+            summary: sanitizeString(summaryNote, 1500, 'Updated Persistent Memory'),
+            payloadJson: compactJson,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // ignore
+        }
+      } else {
+        await logAiAction({
+          actionTitle: 'Persistent Intelligent Memory Store',
+          toolName: 'persistent_memory',
+          permissionLevel: 'routine_write',
+          status: 'executed',
+          targetModule: 'memory',
+          summary: sanitizeString(summaryNote, 1500, 'Initialized Persistent Memory'),
+          payloadJson: compactJson,
+        });
+      }
+    }
+  };
+
+  const setScheduleProposal = (proposal: ScheduleGenerationResult | null) => {
+    setActiveScheduleProposal(proposal);
+    try {
+      if (proposal) {
+        localStorage.setItem('lifeos_active_schedule_proposal_v1', JSON.stringify(proposal));
+      } else {
+        localStorage.removeItem('lifeos_active_schedule_proposal_v1');
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const buildScheduleInput = (options?: {
+    targetDays?: number;
+    startDateStr?: string;
+    dailyMaxHoursOverride?: Record<string, number>;
+    energyOverrideByDate?: Record<string, EnergyLevel>;
+  }) => {
+    const tz = profile?.timezone || persistentMemory.userProfile.timezone || 'Africa/Cairo';
+    const nowInfo = getNowInTimezone(tz);
+    return {
+      nowIso: nowInfo.utcIso,
+      timezone: tz,
+      targetDays: options?.targetDays || 1,
+      startDateStr: options?.startDateStr || nowInfo.dateStr,
+      dailyMaxHoursOverride: options?.dailyMaxHoursOverride,
+      energyOverrideByDate: options?.energyOverrideByDate,
+      existingEvents: events.map((e) => ({
+        id: e.id,
+        title: e.title,
+        dateStr: e.date,
+        startTime: e.startTime,
+        endTime: e.endTime,
+        category: e.eventType,
+      })),
+      prayers: [
+        { name: 'Fajr', time: '04:45', bufferMinutes: profile?.prayerBufferMinutes ?? 20 },
+        { name: 'Dhuhr', time: '12:05', bufferMinutes: profile?.prayerBufferMinutes ?? 20 },
+        { name: 'Asr', time: '15:30', bufferMinutes: profile?.prayerBufferMinutes ?? 20 },
+        { name: 'Maghrib', time: '18:15', bufferMinutes: profile?.prayerBufferMinutes ?? 20 },
+        { name: 'Isha', time: '19:40', bufferMinutes: profile?.prayerBufferMinutes ?? 20 },
+      ],
+      tasks: tasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        category: t.category,
+        priority: (t.priority === 'critical' ? 'high' : t.priority) as 'high' | 'medium' | 'low',
+        estimatedMinutes: t.estimatedMinutes || 45,
+        completed: t.status === 'completed',
+        dueDate: t.dueDate,
+        moduleId: t.linkedModuleId,
+      })),
+      studyModules: studyModules.map((m) => ({
+        id: m.id,
+        name: `${m.code} — ${m.title}`,
+        examDate: m.examDate,
+      })),
+      studyItems: studyItems
+        .filter((s) => s.itemType === 'lecture')
+        .map((s) => ({
+          id: s.id,
+          moduleId: s.moduleId,
+          title: s.title,
+          type: s.itemType,
+          status: s.status,
+          estimatedMinutes: s.estimatedMinutes || 60,
+          sourceRef: s.sourceRef,
+        })),
+      memory: persistentMemory,
+    };
+  };
+
+  const generateSmartSchedule = async (options?: {
+    targetDays?: number;
+    startDateStr?: string;
+    dailyMaxHoursOverride?: Record<string, number>;
+    energyOverrideByDate?: Record<string, EnergyLevel>;
+  }): Promise<ScheduleGenerationResult> => {
+    const payload = buildScheduleInput(options);
+    try {
+      const res = await fetch('/api/ai/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const result = (await res.json()) as ScheduleGenerationResult;
+        setScheduleProposal(result);
+        return result;
+      }
+    } catch {
+      // Fallback to deterministic local execution
+    }
+    const localResult = generateContextAwareSchedule(payload);
+    setScheduleProposal(localResult);
+    return localResult;
+  };
+
+  const adaptSmartSchedule = async (utterance: string): Promise<AdaptiveRescheduleResponse> => {
+    const baseInput = buildScheduleInput({ targetDays: 3 });
+    try {
+      const res = await fetch('/api/ai/schedule/adapt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ utterance, baseInput }),
+      });
+      if (res.ok) {
+        const adapted = (await res.json()) as AdaptiveRescheduleResponse;
+        setScheduleProposal(adapted.scheduleResult);
+        if (adapted.adaptationType === 'exam_moved' && adapted.updatedStudyModules) {
+          for (const uMod of adapted.updatedStudyModules) {
+            const orig = studyModules.find((m) => m.id === uMod.id);
+            if (orig && orig.examDate !== uMod.examDate) {
+              await updateStudyModule(orig.id, { examDate: uMod.examDate });
+            }
+          }
+        }
+        return adapted;
+      }
+    } catch {
+      // Fallback to deterministic local execution
+    }
+    const localAdapted = runAdaptiveReschedule({ utterance, baseInput });
+    setScheduleProposal(localAdapted.scheduleResult);
+    return localAdapted;
+  };
+
+  const approveProposedScheduleBlock = async (blockId: string) => {
+    if (!activeScheduleProposal) return;
+    const targetBlock = activeScheduleProposal.proposedBlocks.find((b) => b.id === blockId);
+    if (!targetBlock || targetBlock.status === 'approved') return;
+
+    await createCalendarEvent({
+      title: `${targetBlock.title}${targetBlock.lectureNumber ? ` (Lec #${targetBlock.lectureNumber})` : ''}`,
+      eventType: targetBlock.sourceType === 'lecture' ? 'study_block' : 'study_block',
+      date: targetBlock.dateStr,
+      startTime: targetBlock.startTime,
+      endTime: targetBlock.endTime,
+      location: `${targetBlock.subject} · ${targetBlock.energyRequirement.toUpperCase()} Energy`,
+      isProtectedAnchor: false,
+      linkedRecordId: targetBlock.sourceId,
+    });
+
+    const nextBlocks = activeScheduleProposal.proposedBlocks.map((b) =>
+      b.id === blockId ? { ...b, status: 'approved' as const } : b
+    );
+    setScheduleProposal({
+      ...activeScheduleProposal,
+      proposedBlocks: nextBlocks,
+    });
+  };
+
+  const approveAllProposedScheduleBlocks = async () => {
+    if (!activeScheduleProposal) return;
+    const unapproved = activeScheduleProposal.proposedBlocks.filter((b) => b.status === 'proposed');
+    for (const blk of unapproved) {
+      await createCalendarEvent({
+        title: `${blk.title}${blk.lectureNumber ? ` (Lec #${blk.lectureNumber})` : ''}`,
+        eventType: 'study_block',
+        date: blk.dateStr,
+        startTime: blk.startTime,
+        endTime: blk.endTime,
+        location: `${blk.subject} · ${blk.energyRequirement.toUpperCase()} Energy`,
+        isProtectedAnchor: false,
+        linkedRecordId: blk.sourceId,
+      });
+    }
+    const nextBlocks = activeScheduleProposal.proposedBlocks.map((b) =>
+      b.status === 'proposed' ? { ...b, status: 'approved' as const } : b
+    );
+    setScheduleProposal({
+      ...activeScheduleProposal,
+      proposedBlocks: nextBlocks,
+    });
+    await logAiAction({
+      actionTitle: `Approved Smart Schedule (${unapproved.length} blocks)`,
+      toolName: 'generate_context_aware_schedule',
+      permissionLevel: 'consequential',
+      status: 'approved',
+      targetModule: 'calendar',
+      summary: `Committed ${unapproved.length} context-aware study blocks to Calendar.`,
+    });
+  };
+
+  const modifyProposedScheduleBlock = (
+    blockId: string,
+    changes: {
+      startTime?: string;
+      durationMinutes?: number;
+      dateStr?: string;
+      status?: 'proposed' | 'approved' | 'completed' | 'skipped';
+    }
+  ) => {
+    if (!activeScheduleProposal) return;
+    const nextBlocks = activeScheduleProposal.proposedBlocks.map((b) => {
+      if (b.id !== blockId) return b;
+      const newDate = changes.dateStr ?? b.dateStr;
+      const newStart = changes.startTime ?? b.startTime;
+      const newDur =
+        changes.durationMinutes !== undefined
+          ? Math.max(15, Math.min(180, changes.durationMinutes))
+          : b.durationMinutes;
+      const startMin = parseTimeToMinutes(newStart);
+      const newEnd = formatMinutesToTime(startMin + newDur);
+      return {
+        ...b,
+        dateStr: newDate,
+        startTime: newStart,
+        endTime: newEnd,
+        durationMinutes: newDur,
+        status: changes.status ?? b.status,
+      };
+    });
+    setScheduleProposal({
+      ...activeScheduleProposal,
+      proposedBlocks: nextBlocks,
+    });
+  };
+
+  const recordActivityFeedback = async (
+    feedback: Omit<SessionFeedbackEntry, 'id' | 'recordedAt'> & {
+      blockId?: string;
+      sourceType?: string;
+      sourceId?: string;
+    }
+  ) => {
+    const nextMem = applySessionFeedbackToMemory(persistentMemory, feedback);
+    await persistMemoryStore(
+      nextMem,
+      `Recorded session feedback for "${feedback.title}" (Completed: ${feedback.completed}, Actual: ${feedback.actualMinutes}m vs Est: ${feedback.estimatedMinutes}m)`
+    );
+
+    if (feedback.blockId && activeScheduleProposal) {
+      modifyProposedScheduleBlock(feedback.blockId, {
+        status: feedback.completed ? 'completed' : 'skipped',
+      });
+    }
+
+    if (feedback.completed) {
+      // Update underlying Task or StudyItem only when the user confirms completion in feedback!
+      if (feedback.sourceType === 'task' && feedback.sourceId) {
+        const targetTask = tasks.find((t) => t.id === feedback.sourceId);
+        if (targetTask) {
+          await updateTask(targetTask, {
+            status: 'completed',
+            actualMinutes: feedback.actualMinutes,
+          });
+        }
+      } else if (feedback.sourceId) {
+        const targetItem = studyItems.find((s) => s.id === feedback.sourceId);
+        if (targetItem) {
+          const rating =
+            feedback.difficultyAccuracy === 'too_easy'
+              ? 5
+              : feedback.difficultyAccuracy === 'accurate'
+                ? 4
+                : 3;
+          await recordStudyFeedback(targetItem, rating, feedback.actualMinutes);
+        }
+      }
+    }
+  };
+
+  const updateEnergyProfile = async (partial: Partial<EnergyProfileConfig>) => {
+    const nextMem: PersistentMemoryStore = {
+      ...persistentMemory,
+      userProfile: {
+        ...persistentMemory.userProfile,
+        ...partial,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    if (partial.timezone && profile && partial.timezone !== profile.timezone) {
+      await updateProfileSettings({ timezone: partial.timezone });
+    }
+    await persistMemoryStore(nextMem, 'Updated Personal Energy & Availability Profile');
+  };
+
+  const addOrUpdateLearnedRule = async (rule: LearnedPreferenceRule) => {
+    const existingIdx = persistentMemory.behavioralMemory.learnedRules.findIndex(
+      (r) => r.id === rule.id || r.ruleText.toLowerCase() === rule.ruleText.toLowerCase()
+    );
+    const nextRules = [...persistentMemory.behavioralMemory.learnedRules];
+    if (existingIdx >= 0) {
+      nextRules[existingIdx] = rule;
+    } else {
+      nextRules.unshift(rule);
+    }
+    const nextMem: PersistentMemoryStore = {
+      ...persistentMemory,
+      behavioralMemory: {
+        ...persistentMemory.behavioralMemory,
+        learnedRules: nextRules,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    await persistMemoryStore(nextMem, `Saved learned rule: ${rule.ruleText}`);
+  };
+
+  const confirmLearnedRule = async (ruleId: string) => {
+    const nextRules = persistentMemory.behavioralMemory.learnedRules.map((r) =>
+      r.id === ruleId ? { ...r, confirmed: true, isTemporary: false } : r
+    );
+    const nextMem: PersistentMemoryStore = {
+      ...persistentMemory,
+      behavioralMemory: {
+        ...persistentMemory.behavioralMemory,
+        learnedRules: nextRules,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    await persistMemoryStore(nextMem, `Confirmed permanent scheduling rule (${ruleId})`);
+  };
+
+  const deleteLearnedRule = async (ruleId: string) => {
+    const nextRules = persistentMemory.behavioralMemory.learnedRules.filter((r) => r.id !== ruleId);
+    const nextMem: PersistentMemoryStore = {
+      ...persistentMemory,
+      behavioralMemory: {
+        ...persistentMemory.behavioralMemory,
+        learnedRules: nextRules,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    await persistMemoryStore(nextMem, `Deleted scheduling rule (${ruleId})`);
+  };
+
+  const resetPersistentMemory = async () => {
+    const fresh = createDefaultPersistentMemory(timezone);
+    await persistMemoryStore(fresh, 'Reset Persistent Memory to defaults');
+  };
+
+  // Persist Pomodoro timer configuration to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('lifeos_pomodoro_timer_v1', JSON.stringify(pomodoroState));
+    } catch {
+      // ignore storage errors
+    }
+  }, [pomodoroState]);
+
+  // Play pleasant Web Audio harmonic chime when Pomodoro completes
+  const playPomodoroChime = (isBreak: boolean) => {
+    try {
+      const AudioCtx =
+        window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const notes = isBreak ? [523.25, 659.25, 783.99] : [587.33, 739.99, 880, 1174.66];
+      notes.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.14);
+        gain.gain.setValueAtTime(0.001, ctx.currentTime + idx * 0.14);
+        gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + idx * 0.14 + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + idx * 0.14 + 0.55);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + idx * 0.14);
+        osc.stop(ctx.currentTime + idx * 0.14 + 0.6);
+      });
+    } catch {
+      // AudioContext blocked or unsupported
+    }
+  };
+
+  const triggerLiveNotification = (title: string, message: string, mode: PomodoroMode) => {
+    const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setPomodoroState((prev) => ({
+      ...prev,
+      liveAlert: {
+        id: `alert-${Date.now()}`,
+        title,
+        message,
+        timestamp: nowLabel,
+        mode,
+      },
+    }));
+
+    if (
+      typeof window !== 'undefined' &&
+      'Notification' in window &&
+      Notification.permission === 'granted'
+    ) {
+      try {
+        new Notification(title, {
+          body: message,
+          tag: 'lifeos-pomodoro-live',
+        });
+      } catch {
+        // Ignore notification errors in restricted frames
+      }
+    }
+  };
+
+  const requestPomodoroNotificationPermission = async (): Promise<boolean> => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    if (Notification.permission === 'granted') {
+      setPomodoroState((prev) => ({ ...prev, browserNotificationsEnabled: true }));
+      return true;
+    }
+    try {
+      const perm = await Notification.requestPermission();
+      const granted = perm === 'granted';
+      setPomodoroState((prev) => ({ ...prev, browserNotificationsEnabled: granted }));
+      return granted;
+    } catch {
+      return false;
+    }
+  };
+
+  const dismissPomodoroAlert = () => {
+    setPomodoroState((prev) => ({ ...prev, liveAlert: null }));
+  };
+
+  const saveCompletedPomodoroRecord = async (
+    durationMinutes: number,
+    snapState: PomodoroTimerState,
+    notes?: string
+  ) => {
+    const cleanMins = Math.max(1, Math.min(300, Math.round(durationMinutes)));
+    const linkedMod = studyModules.find((m) => m.id === snapState.linkedModuleId);
+    const linkedItem = studyItems.find((s) => s.id === snapState.linkedStudyItemId);
+    const linkedTask = tasks.find((t) => t.id === snapState.linkedTaskId);
+
+    const newSession: PomodoroSessionRecord = {
+      id: `pomo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      date: todayDate,
+      durationMinutes: cleanMins,
+      mode: 'focus',
+      category: snapState.category,
+      moduleId: linkedMod?.id || linkedItem?.moduleId || undefined,
+      moduleCode: linkedMod?.code || linkedItem?.moduleCode || undefined,
+      taskId: linkedTask?.id || undefined,
+      taskTitle: linkedTask?.title || snapState.customLabel || undefined,
+      studyItemId: linkedItem?.id || undefined,
+      studyItemTitle: linkedItem?.title || undefined,
+      notes: notes?.trim() || undefined,
+      completedAt: new Date().toISOString(),
+    };
+
+    setLocalPomodoroSessions((prev) => {
+      const next = [newSession, ...prev];
+      try {
+        localStorage.setItem('lifeos_pomodoro_sessions_v1', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+
+    if (user) {
+      await logAiAction({
+        actionTitle: `Pomodoro (${snapState.category}): ${cleanMins}m`,
+        toolName: 'pomodoro_session',
+        permissionLevel: 'routine_write',
+        status: 'executed',
+        targetModule: 'pomodoro',
+        summary: `Completed ${cleanMins}m ${snapState.category} Pomodoro${
+          linkedMod ? ` · ${linkedMod.code}` : ''
+        }${linkedTask ? ` · ${linkedTask.title}` : ''}`,
+        payloadJson: JSON.stringify(newSession),
+      });
+
+      // Credit XP and Coins
+      await awardXpAndCoins(cleanMins, Math.max(5, Math.round(cleanMins / 2)));
+
+      // Update linked Task actualMinutes if present
+      if (linkedTask) {
+        await updateTask(linkedTask, {
+          actualMinutes: (linkedTask.actualMinutes || 0) + cleanMins,
+        });
+      }
+
+      // Update linked StudyItem lastStudiedDate if present
+      if (linkedItem) {
+        await updateStudyItem(linkedItem.id, {
+          lastStudiedDate: todayDate,
+          status: linkedItem.status === 'unstudied' ? 'studied' : linkedItem.status,
+        });
+      }
+    }
+  };
+
+  // Update browser tab title dynamically when Pomodoro is running in the background
+  useEffect(() => {
+    if (!pomodoroState.running) {
+      document.title = 'Life OS — Personal Operating System';
+      return;
+    }
+    const mins = Math.floor(pomodoroState.remainingSeconds / 60);
+    const secs = pomodoroState.remainingSeconds % 60;
+    const formatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    const modeLabel =
+      pomodoroState.mode === 'focus'
+        ? pomodoroState.category
+        : pomodoroState.mode === 'short_break'
+        ? 'Short Break'
+        : 'Long Break';
+    document.title = `(${formatted}) ${modeLabel} · Life OS`;
+  }, [
+    pomodoroState.running,
+    pomodoroState.remainingSeconds,
+    pomodoroState.mode,
+    pomodoroState.category,
+  ]);
+
+  // Background wall-clock Pomodoro ticker (immune to tab throttling)
+  useEffect(() => {
+    if (!pomodoroState.running) {
+      lastTickMsRef.current = null;
+      return;
+    }
+
+    lastTickMsRef.current = Date.now();
+
+    const tick = () => {
+      const now = Date.now();
+      const last = lastTickMsRef.current ?? now;
+      const deltaSeconds = Math.floor((now - last) / 1000);
+      if (deltaSeconds < 1) return;
+      lastTickMsRef.current = last + deltaSeconds * 1000;
+
+      setPomodoroState((prev) => {
+        if (!prev.running) return prev;
+        const nextRemaining = Math.max(0, prev.remainingSeconds - deltaSeconds);
+        const nextElapsedFocus =
+          prev.mode === 'focus' ? prev.elapsedFocusSeconds + deltaSeconds : prev.elapsedFocusSeconds;
+
+        if (nextRemaining > 0) {
+          return {
+            ...prev,
+            remainingSeconds: nextRemaining,
+            elapsedFocusSeconds: nextElapsedFocus,
+          };
+        }
+
+        // Timer reached 00:00!
+        if (prev.soundEnabled) {
+          playPomodoroChime(prev.mode !== 'focus');
+        }
+
+        if (prev.mode === 'focus') {
+          const completedMins = Math.max(1, Math.round(prev.totalDurationSeconds / 60));
+          // Fire async persistence without blocking state transition
+          setTimeout(() => {
+            saveCompletedPomodoroRecord(completedMins, prev);
+          }, 0);
+
+          const isLongBreakNext = prev.sessionNumber % 4 === 0;
+          const nextMode: PomodoroMode = isLongBreakNext ? 'long_break' : 'short_break';
+          const nextBreakMins = isLongBreakNext
+            ? prev.longBreakMinutesPreset
+            : prev.shortBreakMinutesPreset;
+
+          const alertTitle = `Pomodoro #${prev.sessionNumber} Complete! (+${completedMins}m logged)`;
+          const alertMsg = `${completedMins} min of ${prev.category} added to your Study Time. ${
+            isLongBreakNext ? 'Time for a Long Break!' : 'Time for a Short Break!'
+          }`;
+
+          setTimeout(() => {
+            triggerLiveNotification(alertTitle, alertMsg, 'focus');
+          }, 10);
+
+          return {
+            ...prev,
+            running: prev.autoStartBreaks,
+            mode: nextMode,
+            totalDurationSeconds: nextBreakMins * 60,
+            remainingSeconds: nextBreakMins * 60,
+            elapsedFocusSeconds: 0,
+            sessionNumber: prev.sessionNumber + 1,
+          };
+        } else {
+          // Break finished -> transition to Focus
+          const focusMins = prev.focusMinutesPreset;
+          setTimeout(() => {
+            triggerLiveNotification(
+              'Break Finished — Ready to Focus',
+              `Next ${focusMins}m ${prev.category} Pomodoro is ready.`,
+              prev.mode
+            );
+          }, 10);
+
+          return {
+            ...prev,
+            running: prev.autoStartFocus,
+            mode: 'focus',
+            totalDurationSeconds: focusMins * 60,
+            remainingSeconds: focusMins * 60,
+            elapsedFocusSeconds: 0,
+          };
+        }
+      });
+    };
+
+    const intervalId = setInterval(tick, 300);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        tick();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [pomodoroState.running]);
+
+  const startPomodoro = () => {
+    lastTickMsRef.current = Date.now();
+    setPomodoroState((prev) => ({ ...prev, running: true }));
+  };
+
+  const pausePomodoro = () => {
+    lastTickMsRef.current = null;
+    setPomodoroState((prev) => ({ ...prev, running: false }));
+  };
+
+  const togglePomodoro = () => {
+    setPomodoroState((prev) => {
+      const nextRunning = !prev.running;
+      lastTickMsRef.current = nextRunning ? Date.now() : null;
+      return { ...prev, running: nextRunning };
+    });
+  };
+
+  const resetPomodoro = () => {
+    lastTickMsRef.current = null;
+    setPomodoroState((prev) => {
+      const mins =
+        prev.mode === 'focus'
+          ? prev.focusMinutesPreset
+          : prev.mode === 'short_break'
+          ? prev.shortBreakMinutesPreset
+          : prev.longBreakMinutesPreset;
+      return {
+        ...prev,
+        running: false,
+        totalDurationSeconds: mins * 60,
+        remainingSeconds: mins * 60,
+        elapsedFocusSeconds: 0,
+      };
+    });
+  };
+
+  const switchPomodoroMode = (mode: PomodoroMode) => {
+    lastTickMsRef.current = null;
+    setPomodoroState((prev) => {
+      const mins =
+        mode === 'focus'
+          ? prev.focusMinutesPreset
+          : mode === 'short_break'
+          ? prev.shortBreakMinutesPreset
+          : prev.longBreakMinutesPreset;
+      return {
+        ...prev,
+        running: false,
+        mode,
+        totalDurationSeconds: mins * 60,
+        remainingSeconds: mins * 60,
+        elapsedFocusSeconds: 0,
+      };
+    });
+  };
+
+  const updatePomodoroConfig = (partial: Partial<PomodoroTimerState>) => {
+    setPomodoroState((prev) => {
+      const updated = { ...prev, ...partial };
+      if (!prev.running) {
+        if (partial.focusMinutesPreset !== undefined && updated.mode === 'focus') {
+          updated.totalDurationSeconds = partial.focusMinutesPreset * 60;
+          updated.remainingSeconds = partial.focusMinutesPreset * 60;
+          updated.elapsedFocusSeconds = 0;
+        } else if (
+          partial.shortBreakMinutesPreset !== undefined &&
+          updated.mode === 'short_break'
+        ) {
+          updated.totalDurationSeconds = partial.shortBreakMinutesPreset * 60;
+          updated.remainingSeconds = partial.shortBreakMinutesPreset * 60;
+        } else if (
+          partial.longBreakMinutesPreset !== undefined &&
+          updated.mode === 'long_break'
+        ) {
+          updated.totalDurationSeconds = partial.longBreakMinutesPreset * 60;
+          updated.remainingSeconds = partial.longBreakMinutesPreset * 60;
+        }
+      }
+      return updated;
+    });
+  };
+
+  const completePomodoroSession = async (customMinutes?: number, notes?: string) => {
+    const snap = pomodoroState;
+    const elapsedMins =
+      customMinutes ??
+      (snap.elapsedFocusSeconds >= 60
+        ? Math.round(snap.elapsedFocusSeconds / 60)
+        : Math.round(snap.totalDurationSeconds / 60));
+
+    lastTickMsRef.current = null;
+    if (snap.soundEnabled) {
+      playPomodoroChime(false);
+    }
+
+    await saveCompletedPomodoroRecord(elapsedMins, snap, notes);
+
+    triggerLiveNotification(
+      `Logged ${elapsedMins}m ${snap.category} Session`,
+      `Added ${elapsedMins} minutes to your Study Time (+${elapsedMins} XP).`,
+      'focus'
+    );
+
+    setPomodoroState((prev) => ({
+      ...prev,
+      running: false,
+      mode: 'focus',
+      totalDurationSeconds: prev.focusMinutesPreset * 60,
+      remainingSeconds: prev.focusMinutesPreset * 60,
+      elapsedFocusSeconds: 0,
+      sessionNumber: prev.sessionNumber + 1,
+    }));
+  };
+
+  const deletePomodoroSession = async (sessionId: string, firestoreLogId?: string) => {
+    setLocalPomodoroSessions((prev) => {
+      const next = prev.filter((s) => s.id !== sessionId);
+      try {
+        localStorage.setItem('lifeos_pomodoro_sessions_v1', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+    if (firestoreLogId && user) {
+      await deleteAiLog(firestoreLogId);
+    }
   };
 
   return (
@@ -1057,9 +2294,15 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         financeRecords,
         knowledgeItems,
         goalsHabits,
-        aiLogs,
+        aiLogs: visibleAiLogs,
         dailyReviews,
+        pomodoroState,
+        pomodoroSessions,
         todayDate,
+        currentTimeStr,
+        timezone,
+        persistentMemory,
+        activeScheduleProposal,
         signIn,
         logOut,
         updateProfileSettings,
@@ -1069,20 +2312,27 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updateTaskStatus,
         deleteTask,
         createCalendarEvent,
+        updateCalendarEvent,
         deleteCalendarEvent,
         createStudyModule,
+        updateStudyModule,
         deleteStudyModule,
         createStudyItem,
+        updateStudyItem,
         deleteStudyItem,
         recordStudyFeedback,
         createHealthLog,
+        updateHealthLog,
         deleteHealthLog,
         createFinanceRecord,
+        updateFinanceRecord,
         deleteFinanceRecord,
         createKnowledgeItem,
+        updateKnowledgeItem,
         updateKnowledgeProgress,
         deleteKnowledgeItem,
         createGoalHabit,
+        updateGoalHabit,
         toggleHabitOrGoalCompletion,
         deleteGoalHabit,
         redeemReward,
@@ -1091,6 +2341,28 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         deleteAiLog,
         saveDailyReview,
         clearAllWorkspaceData,
+        startPomodoro,
+        pausePomodoro,
+        togglePomodoro,
+        resetPomodoro,
+        switchPomodoroMode,
+        updatePomodoroConfig,
+        completePomodoroSession,
+        deletePomodoroSession,
+        requestPomodoroNotificationPermission,
+        dismissPomodoroAlert,
+        generateSmartSchedule,
+        adaptSmartSchedule,
+        setScheduleProposal,
+        approveProposedScheduleBlock,
+        approveAllProposedScheduleBlocks,
+        modifyProposedScheduleBlock,
+        recordActivityFeedback,
+        updateEnergyProfile,
+        addOrUpdateLearnedRule,
+        confirmLearnedRule,
+        deleteLearnedRule,
+        resetPersistentMemory,
       }}
     >
       {children}
