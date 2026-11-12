@@ -1,0 +1,6 @@
+{
+  "name": "Life OS",
+  "description": "A personal operating system for study, health, productivity, finances, learning and everyday life with Spoon Feeder AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

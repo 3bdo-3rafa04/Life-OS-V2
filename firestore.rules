@@ -1,0 +1,436 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Hardened Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'currency', 'timezone', 'xp', 'level', 'coins', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'currency', 'timezone', 'city', 'prayerMethod', 'prayerBufferMinutes', 'xp', 'level', 'coins', 'streakDays', 'calorieTarget', 'proteinTargetGrams', 'waterTargetMl', 'waterLoggedTodayMl', 'aiRoutineAutoApprove', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.uid == request.auth.uid &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 10 &&
+        data.timezone is string && data.timezone.size() >= 1 && data.timezone.size() <= 64 &&
+        (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
+        (!('prayerMethod' in data) || (data.prayerMethod is string && data.prayerMethod.size() <= 20 && data.prayerMethod in ['MWL', 'ISNA', 'Egypt', 'Makkah', 'Karachi', 'Tehran'])) &&
+        (!('prayerBufferMinutes' in data) || (data.prayerBufferMinutes is int && data.prayerBufferMinutes >= 0 && data.prayerBufferMinutes <= 120)) &&
+        data.xp is int && data.xp >= 0 &&
+        data.level is int && data.level >= 1 &&
+        data.coins is int && data.coins >= 0 &&
+        (!('streakDays' in data) || (data.streakDays is int && data.streakDays >= 0)) &&
+        (!('calorieTarget' in data) || (data.calorieTarget is int && data.calorieTarget >= 0 && data.calorieTarget <= 15000)) &&
+        (!('proteinTargetGrams' in data) || (data.proteinTargetGrams is int && data.proteinTargetGrams >= 0 && data.proteinTargetGrams <= 1000)) &&
+        (!('waterTargetMl' in data) || (data.waterTargetMl is int && data.waterTargetMl >= 0 && data.waterTargetMl <= 15000)) &&
+        (!('waterLoggedTodayMl' in data) || (data.waterLoggedTodayMl is int && data.waterLoggedTodayMl >= 0 && data.waterLoggedTodayMl <= 15000)) &&
+        (!('aiRoutineAutoApprove' in data) || (data.aiRoutineAutoApprove is bool)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll(['ownerId', 'title', 'priority', 'status', 'category', 'estimatedMinutes', 'dueDate', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'title', 'notes', 'priority', 'status', 'statusReason', 'category', 'estimatedMinutes', 'actualMinutes', 'dueDate', 'scheduledStart', 'linkedGoalId', 'linkedModuleId', 'isRecurring', 'recurrenceRule', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000)) &&
+        data.priority is string && data.priority.size() <= 20 && data.priority in ['critical', 'high', 'medium', 'low'] &&
+        data.status is string && data.status.size() <= 20 && data.status in ['todo', 'in_progress', 'completed', 'blocked', 'deferred', 'dropped'] &&
+        (!('statusReason' in data) || (data.statusReason is string && data.statusReason.size() <= 300)) &&
+        data.category is string && data.category.size() <= 20 && data.category in ['study', 'work', 'health', 'finance', 'personal', 'routine'] &&
+        data.estimatedMinutes is int && data.estimatedMinutes >= 1 && data.estimatedMinutes <= 1440 &&
+        (!('actualMinutes' in data) || (data.actualMinutes is int && data.actualMinutes >= 0 && data.actualMinutes <= 1440)) &&
+        data.dueDate is string && data.dueDate.size() >= 1 && data.dueDate.size() <= 32 &&
+        (!('scheduledStart' in data) || (data.scheduledStart is string && data.scheduledStart.size() <= 32)) &&
+        (!('linkedGoalId' in data) || (data.linkedGoalId is string && data.linkedGoalId.size() <= 128)) &&
+        (!('linkedModuleId' in data) || (data.linkedModuleId is string && data.linkedModuleId.size() <= 128)) &&
+        (!('isRecurring' in data) || (data.isRecurring is bool)) &&
+        (!('recurrenceRule' in data) || (data.recurrenceRule is string && data.recurrenceRule.size() <= 64)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCalendarEvent(data) {
+      return data.keys().hasAll(['ownerId', 'title', 'eventType', 'date', 'startTime', 'endTime', 'isProtectedAnchor', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'title', 'eventType', 'date', 'startTime', 'endTime', 'location', 'isProtectedAnchor', 'linkedRecordId', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.eventType is string && data.eventType.size() <= 24 && data.eventType in ['fixed', 'lecture', 'study_block', 'workout', 'prayer', 'routine', 'exam'] &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 16 &&
+        data.startTime is string && data.startTime.size() >= 1 && data.startTime.size() <= 10 &&
+        data.endTime is string && data.endTime.size() >= 1 && data.endTime.size() <= 10 &&
+        (!('location' in data) || (data.location is string && data.location.size() <= 200)) &&
+        data.isProtectedAnchor is bool &&
+        (!('linkedRecordId' in data) || (data.linkedRecordId is string && data.linkedRecordId.size() <= 128)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStudyModule(data) {
+      return data.keys().hasAll(['ownerId', 'code', 'title', 'term', 'examDate', 'totalLectures', 'completedLectures', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'code', 'title', 'term', 'examDate', 'targetGrade', 'totalLectures', 'completedLectures', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.code is string && data.code.size() >= 1 && data.code.size() <= 32 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.term is string && data.term.size() >= 1 && data.term.size() <= 64 &&
+        data.examDate is string && data.examDate.size() >= 1 && data.examDate.size() <= 32 &&
+        (!('targetGrade' in data) || (data.targetGrade is string && data.targetGrade.size() <= 16)) &&
+        data.totalLectures is int && data.totalLectures >= 0 && data.totalLectures <= 500 &&
+        data.completedLectures is int && data.completedLectures >= 0 && data.completedLectures <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStudyItem(data) {
+      return data.keys().hasAll(['ownerId', 'moduleId', 'moduleCode', 'title', 'itemType', 'status', 'importance', 'estimatedMinutes', 'confidenceRating', 'repetitionCount', 'nextReviewDate', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'moduleId', 'moduleCode', 'title', 'itemType', 'status', 'importance', 'estimatedMinutes', 'confidenceRating', 'stabilityDays', 'difficultyScore', 'repetitionCount', 'lastStudiedDate', 'nextReviewDate', 'notes', 'frontPrompt', 'backAnswer', 'sourceRef', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.moduleId is string && data.moduleId.size() >= 1 && data.moduleId.size() <= 128 && data.moduleId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.moduleCode is string && data.moduleCode.size() >= 1 && data.moduleCode.size() <= 32 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.itemType is string && data.itemType.size() <= 24 && data.itemType in ['lecture', 'flashcard', 'quiz_topic'] &&
+        data.status is string && data.status.size() <= 24 && data.status in ['unstudied', 'studied', 'review_due', 'mastered'] &&
+        data.importance is string && data.importance.size() <= 16 && data.importance in ['high', 'medium', 'low'] &&
+        data.estimatedMinutes is int && data.estimatedMinutes >= 1 && data.estimatedMinutes <= 600 &&
+        data.confidenceRating is int && data.confidenceRating >= 1 && data.confidenceRating <= 5 &&
+        (!('stabilityDays' in data) || (data.stabilityDays is number && data.stabilityDays >= 0)) &&
+        (!('difficultyScore' in data) || (data.difficultyScore is number && data.difficultyScore >= 0 && data.difficultyScore <= 10)) &&
+        data.repetitionCount is int && data.repetitionCount >= 0 &&
+        (!('lastStudiedDate' in data) || (data.lastStudiedDate is string && data.lastStudiedDate.size() <= 32)) &&
+        data.nextReviewDate is string && data.nextReviewDate.size() >= 1 && data.nextReviewDate.size() <= 32 &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 4000)) &&
+        (!('frontPrompt' in data) || (data.frontPrompt is string && data.frontPrompt.size() <= 500)) &&
+        (!('backAnswer' in data) || (data.backAnswer is string && data.backAnswer.size() <= 2000)) &&
+        (!('sourceRef' in data) || (data.sourceRef is string && data.sourceRef.size() <= 200)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidHealthLog(data) {
+      return data.keys().hasAll(['ownerId', 'logType', 'date', 'title', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'logType', 'date', 'title', 'weightKg', 'waistCm', 'chestCm', 'armsCm', 'durationMinutes', 'volumeKg', 'rpe', 'exercisesSummary', 'calories', 'proteinGrams', 'carbsGrams', 'fatGrams', 'notes', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.logType is string && data.logType.size() <= 20 && data.logType in ['measurement', 'workout', 'meal'] &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 16 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        (!('weightKg' in data) || (data.weightKg is number && data.weightKg >= 0 && data.weightKg <= 500)) &&
+        (!('waistCm' in data) || (data.waistCm is number && data.waistCm >= 0 && data.waistCm <= 300)) &&
+        (!('chestCm' in data) || (data.chestCm is number && data.chestCm >= 0 && data.chestCm <= 300)) &&
+        (!('armsCm' in data) || (data.armsCm is number && data.armsCm >= 0 && data.armsCm <= 150)) &&
+        (!('durationMinutes' in data) || (data.durationMinutes is int && data.durationMinutes >= 0 && data.durationMinutes <= 600)) &&
+        (!('volumeKg' in data) || (data.volumeKg is int && data.volumeKg >= 0 && data.volumeKg <= 100000)) &&
+        (!('rpe' in data) || (data.rpe is int && data.rpe >= 1 && data.rpe <= 10)) &&
+        (!('exercisesSummary' in data) || (data.exercisesSummary is string && data.exercisesSummary.size() <= 1500)) &&
+        (!('calories' in data) || (data.calories is int && data.calories >= 0 && data.calories <= 15000)) &&
+        (!('proteinGrams' in data) || (data.proteinGrams is int && data.proteinGrams >= 0 && data.proteinGrams <= 1000)) &&
+        (!('carbsGrams' in data) || (data.carbsGrams is int && data.carbsGrams >= 0 && data.carbsGrams <= 2000)) &&
+        (!('fatGrams' in data) || (data.fatGrams is int && data.fatGrams >= 0 && data.fatGrams <= 1000)) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFinanceRecord(data) {
+      return data.keys().hasAll(['ownerId', 'recordType', 'title', 'category', 'accountName', 'amountMinor', 'date', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'recordType', 'title', 'category', 'accountName', 'amountMinor', 'targetAmountMinor', 'date', 'isRecurring', 'notes', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.recordType is string && data.recordType.size() <= 20 && data.recordType in ['expense', 'income', 'budget', 'savings_goal', 'subscription'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 64 &&
+        data.accountName is string && data.accountName.size() >= 1 && data.accountName.size() <= 64 &&
+        data.amountMinor is int && data.amountMinor >= 0 &&
+        (!('targetAmountMinor' in data) || (data.targetAmountMinor is int && data.targetAmountMinor >= 0)) &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 16 &&
+        (!('isRecurring' in data) || (data.isRecurring is bool)) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidKnowledgeItem(data) {
+      return data.keys().hasAll(['ownerId', 'itemType', 'title', 'status', 'progressCurrent', 'progressTotal', 'progressUnit', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'itemType', 'title', 'authorOrSource', 'status', 'progressCurrent', 'progressTotal', 'progressUnit', 'rating', 'tags', 'takeaways', 'linkedEntityId', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.itemType is string && data.itemType.size() <= 20 && data.itemType in ['book', 'course', 'podcast', 'article', 'note'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        (!('authorOrSource' in data) || (data.authorOrSource is string && data.authorOrSource.size() <= 150)) &&
+        data.status is string && data.status.size() <= 20 && data.status in ['wishlist', 'planned', 'in_progress', 'paused', 'completed'] &&
+        data.progressCurrent is int && data.progressCurrent >= 0 &&
+        data.progressTotal is int && data.progressTotal >= 1 &&
+        data.progressUnit is string && data.progressUnit.size() >= 1 && data.progressUnit.size() <= 32 &&
+        (!('rating' in data) || (data.rating is int && data.rating >= 1 && data.rating <= 5)) &&
+        (!('tags' in data) || (data.tags is string && data.tags.size() <= 200)) &&
+        (!('takeaways' in data) || (data.takeaways is string && data.takeaways.size() <= 4000)) &&
+        (!('linkedEntityId' in data) || (data.linkedEntityId is string && data.linkedEntityId.size() <= 128)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidGoalHabit(data) {
+      return data.keys().hasAll(['ownerId', 'recordType', 'title', 'status', 'frequency', 'progressPercent', 'streakCount', 'completedToday', 'xpReward', 'coinCostOrReward', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'recordType', 'title', 'whyReason', 'status', 'frequency', 'progressPercent', 'streakCount', 'completedToday', 'lastCompletedDate', 'targetDate', 'xpReward', 'coinCostOrReward', 'nextSmallAction', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.recordType is string && data.recordType.size() <= 20 && data.recordType in ['goal', 'habit', 'quest', 'reward'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        (!('whyReason' in data) || (data.whyReason is string && data.whyReason.size() <= 500)) &&
+        data.status is string && data.status.size() <= 20 && data.status in ['active', 'completed', 'paused', 'stalled'] &&
+        data.frequency is string && data.frequency.size() <= 20 && data.frequency in ['daily', 'weekly', 'custom', 'once'] &&
+        data.progressPercent is int && data.progressPercent >= 0 && data.progressPercent <= 100 &&
+        data.streakCount is int && data.streakCount >= 0 &&
+        data.completedToday is bool &&
+        (!('lastCompletedDate' in data) || (data.lastCompletedDate is string && data.lastCompletedDate.size() <= 16)) &&
+        (!('targetDate' in data) || (data.targetDate is string && data.targetDate.size() <= 16)) &&
+        data.xpReward is int && data.xpReward >= 0 && data.xpReward <= 10000 &&
+        data.coinCostOrReward is int && data.coinCostOrReward >= 0 && data.coinCostOrReward <= 100000 &&
+        (!('nextSmallAction' in data) || (data.nextSmallAction is string && data.nextSmallAction.size() <= 300)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAiActionLog(data) {
+      return data.keys().hasAll(['ownerId', 'actionTitle', 'toolName', 'permissionLevel', 'status', 'targetModule', 'summary', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'actionTitle', 'toolName', 'permissionLevel', 'status', 'targetModule', 'summary', 'payloadJson', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.actionTitle is string && data.actionTitle.size() >= 1 && data.actionTitle.size() <= 200 &&
+        data.toolName is string && data.toolName.size() >= 1 && data.toolName.size() <= 100 &&
+        data.permissionLevel is string && data.permissionLevel.size() <= 24 && data.permissionLevel in ['read', 'routine_write', 'consequential', 'destructive'] &&
+        data.status is string && data.status.size() <= 24 && data.status in ['executed', 'pending_approval', 'approved', 'rejected', 'undone'] &&
+        data.targetModule is string && data.targetModule.size() >= 1 && data.targetModule.size() <= 64 &&
+        data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 1500 &&
+        (!('payloadJson' in data) || (data.payloadJson is string && data.payloadJson.size() <= 4000)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDailyReview(data) {
+      return data.keys().hasAll(['ownerId', 'date', 'energyLevel', 'commitmentScore', 'completionScore', 'consistencyScore', 'planningAccuracyScore', 'wellbeingScore', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'date', 'energyLevel', 'commitmentScore', 'completionScore', 'consistencyScore', 'planningAccuracyScore', 'wellbeingScore', 'wins', 'obstacles', 'tomorrowAdjustment', 'createdAt', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 16 &&
+        data.energyLevel is string && data.energyLevel.size() <= 20 && data.energyLevel in ['high', 'moderate', 'low', 'recovering'] &&
+        data.commitmentScore is int && data.commitmentScore >= 0 && data.commitmentScore <= 100 &&
+        data.completionScore is int && data.completionScore >= 0 && data.completionScore <= 100 &&
+        data.consistencyScore is int && data.consistencyScore >= 0 && data.consistencyScore <= 100 &&
+        data.planningAccuracyScore is int && data.planningAccuracyScore >= 0 && data.planningAccuracyScore <= 100 &&
+        data.wellbeingScore is int && data.wellbeingScore >= 0 && data.wellbeingScore <= 100 &&
+        (!('wins' in data) || (data.wins is string && data.wins.size() <= 1000)) &&
+        (!('obstacles' in data) || (data.obstacles is string && data.obstacles.size() <= 1000)) &&
+        (!('tomorrowAdjustment' in data) || (data.tomorrowAdjustment is string && data.tomorrowAdjustment.size() <= 1000)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 3. Collection Match Rules
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && userId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(userId) && userId == request.auth.uid &&
+        isValidUserProfile(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(userId) && userId == request.auth.uid &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'currency', 'timezone', 'city', 'prayerMethod', 'prayerBufferMinutes', 'xp', 'level', 'coins', 'streakDays', 'calorieTarget', 'proteinTargetGrams', 'waterTargetMl', 'waterLoggedTodayMl', 'aiRoutineAutoApprove', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(userId) && userId == request.auth.uid;
+    }
+
+    match /tasks/{taskId} {
+      allow get: if isSignedIn() && isValidId(taskId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(taskId) &&
+        isValidTask(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(taskId) &&
+        isValidTask(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'priority', 'status', 'statusReason', 'category', 'estimatedMinutes', 'actualMinutes', 'dueDate', 'scheduledStart', 'linkedGoalId', 'linkedModuleId', 'isRecurring', 'recurrenceRule', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(taskId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /calendar_events/{eventId} {
+      allow get: if isSignedIn() && isValidId(eventId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(eventId) &&
+        isValidCalendarEvent(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(eventId) &&
+        isValidCalendarEvent(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'eventType', 'date', 'startTime', 'endTime', 'location', 'isProtectedAnchor', 'linkedRecordId', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(eventId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /study_modules/{moduleId} {
+      allow get: if isSignedIn() && isValidId(moduleId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(moduleId) &&
+        isValidStudyModule(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(moduleId) &&
+        isValidStudyModule(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['code', 'title', 'term', 'examDate', 'targetGrade', 'totalLectures', 'completedLectures', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(moduleId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /study_items/{itemId} {
+      allow get: if isSignedIn() && isValidId(itemId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(itemId) &&
+        isValidStudyItem(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/study_modules/$(incoming().moduleId)) &&
+        get(/databases/$(database)/documents/study_modules/$(incoming().moduleId)).data.ownerId == request.auth.uid;
+      allow update: if isVerifiedUser() && isValidId(itemId) &&
+        isValidStudyItem(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().moduleId == existing().moduleId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['moduleCode', 'title', 'itemType', 'status', 'importance', 'estimatedMinutes', 'confidenceRating', 'stabilityDays', 'difficultyScore', 'repetitionCount', 'lastStudiedDate', 'nextReviewDate', 'notes', 'frontPrompt', 'backAnswer', 'sourceRef', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(itemId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /health_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(logId) &&
+        isValidHealthLog(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(logId) &&
+        isValidHealthLog(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['logType', 'date', 'title', 'weightKg', 'waistCm', 'chestCm', 'armsCm', 'durationMinutes', 'volumeKg', 'rpe', 'exercisesSummary', 'calories', 'proteinGrams', 'carbsGrams', 'fatGrams', 'notes', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(logId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /finance_records/{recordId} {
+      allow get: if isSignedIn() && isValidId(recordId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(recordId) &&
+        isValidFinanceRecord(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(recordId) &&
+        isValidFinanceRecord(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['recordType', 'title', 'category', 'accountName', 'amountMinor', 'targetAmountMinor', 'date', 'isRecurring', 'notes', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(recordId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /knowledge_items/{itemId} {
+      allow get: if isSignedIn() && isValidId(itemId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(itemId) &&
+        isValidKnowledgeItem(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(itemId) &&
+        isValidKnowledgeItem(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['itemType', 'title', 'authorOrSource', 'status', 'progressCurrent', 'progressTotal', 'progressUnit', 'rating', 'tags', 'takeaways', 'linkedEntityId', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(itemId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /goals_habits/{recordId} {
+      allow get: if isSignedIn() && isValidId(recordId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(recordId) &&
+        isValidGoalHabit(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(recordId) &&
+        isValidGoalHabit(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['recordType', 'title', 'whyReason', 'status', 'frequency', 'progressPercent', 'streakCount', 'completedToday', 'lastCompletedDate', 'targetDate', 'xpReward', 'coinCostOrReward', 'nextSmallAction', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(recordId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /ai_action_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(logId) &&
+        isValidAiActionLog(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(logId) &&
+        isValidAiActionLog(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'summary', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(logId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /daily_reviews/{reviewId} {
+      allow get: if isSignedIn() && isValidId(reviewId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(reviewId) &&
+        isValidDailyReview(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(reviewId) &&
+        isValidDailyReview(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['energyLevel', 'commitmentScore', 'completionScore', 'consistencyScore', 'planningAccuracyScore', 'wellbeingScore', 'wins', 'obstacles', 'tomorrowAdjustment', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(reviewId) && existing().ownerId == request.auth.uid;
+    }
+  }
+}

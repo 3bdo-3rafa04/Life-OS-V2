@@ -1,0 +1,298 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User settings, gamification stats, prayer calculation settings, and nutrition targets.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "currency": { "type": "string", "maxLength": 10 },
+        "timezone": { "type": "string", "maxLength": 64 },
+        "city": { "type": "string", "maxLength": 100 },
+        "prayerMethod": { "type": "string", "enum": ["MWL", "ISNA", "Egypt", "Makkah", "Karachi", "Tehran"] },
+        "prayerBufferMinutes": { "type": "integer" },
+        "xp": { "type": "integer" },
+        "level": { "type": "integer" },
+        "coins": { "type": "integer" },
+        "streakDays": { "type": "integer" },
+        "calorieTarget": { "type": "integer" },
+        "proteinTargetGrams": { "type": "integer" },
+        "waterTargetMl": { "type": "integer" },
+        "waterLoggedTodayMl": { "type": "integer" },
+        "aiRoutineAutoApprove": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "currency", "timezone", "xp", "level", "coins", "createdAt", "updatedAt"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Actionable task with priority, duration, status, and optional module/goal linkage.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "priority": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+        "status": { "type": "string", "enum": ["todo", "in_progress", "completed", "blocked", "deferred", "dropped"] },
+        "statusReason": { "type": "string", "maxLength": 300 },
+        "category": { "type": "string", "enum": ["study", "work", "health", "finance", "personal", "routine"] },
+        "estimatedMinutes": { "type": "integer" },
+        "actualMinutes": { "type": "integer" },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "scheduledStart": { "type": "string", "maxLength": 32 },
+        "linkedGoalId": { "type": "string", "maxLength": 128 },
+        "linkedModuleId": { "type": "string", "maxLength": 128 },
+        "isRecurring": { "type": "boolean" },
+        "recurrenceRule": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "title", "priority", "status", "category", "estimatedMinutes", "dueDate", "createdAt", "updatedAt"]
+    },
+    "CalendarEvent": {
+      "title": "CalendarEvent",
+      "description": "Fixed appointment, lecture, workout session, prayer anchor, or AI time-block.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "eventType": { "type": "string", "enum": ["fixed", "lecture", "study_block", "workout", "prayer", "routine", "exam"] },
+        "date": { "type": "string", "maxLength": 16 },
+        "startTime": { "type": "string", "maxLength": 10 },
+        "endTime": { "type": "string", "maxLength": 10 },
+        "location": { "type": "string", "maxLength": 200 },
+        "isProtectedAnchor": { "type": "boolean" },
+        "linkedRecordId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "title", "eventType", "date", "startTime", "endTime", "isProtectedAnchor", "createdAt", "updatedAt"]
+    },
+    "StudyModule": {
+      "title": "StudyModule",
+      "description": "Academic course/module with exam date and readiness metrics.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "term": { "type": "string", "maxLength": 64 },
+        "examDate": { "type": "string", "maxLength": 32 },
+        "targetGrade": { "type": "string", "maxLength": 16 },
+        "totalLectures": { "type": "integer" },
+        "completedLectures": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "code", "title", "term", "examDate", "totalLectures", "completedLectures", "createdAt", "updatedAt"]
+    },
+    "StudyItem": {
+      "title": "StudyItem",
+      "description": "Lecture topic, spaced-repetition revision record, or active-recall flashcard.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "moduleId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "moduleCode": { "type": "string", "maxLength": 32 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "itemType": { "type": "string", "enum": ["lecture", "flashcard", "quiz_topic"] },
+        "status": { "type": "string", "enum": ["unstudied", "studied", "review_due", "mastered"] },
+        "importance": { "type": "string", "enum": ["high", "medium", "low"] },
+        "estimatedMinutes": { "type": "integer" },
+        "confidenceRating": { "type": "integer" },
+        "stabilityDays": { "type": "number" },
+        "difficultyScore": { "type": "number" },
+        "repetitionCount": { "type": "integer" },
+        "lastStudiedDate": { "type": "string", "maxLength": 32 },
+        "nextReviewDate": { "type": "string", "maxLength": 32 },
+        "notes": { "type": "string", "maxLength": 4000 },
+        "frontPrompt": { "type": "string", "maxLength": 500 },
+        "backAnswer": { "type": "string", "maxLength": 2000 },
+        "sourceRef": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "moduleId", "moduleCode", "title", "itemType", "status", "importance", "estimatedMinutes", "confidenceRating", "repetitionCount", "nextReviewDate", "createdAt", "updatedAt"]
+    },
+    "HealthLog": {
+      "title": "HealthLog",
+      "description": "Body measurement, workout session, or nutrition meal entry.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "logType": { "type": "string", "enum": ["measurement", "workout", "meal"] },
+        "date": { "type": "string", "maxLength": 16 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "weightKg": { "type": "number" },
+        "waistCm": { "type": "number" },
+        "chestCm": { "type": "number" },
+        "armsCm": { "type": "number" },
+        "durationMinutes": { "type": "integer" },
+        "volumeKg": { "type": "integer" },
+        "rpe": { "type": "integer" },
+        "exercisesSummary": { "type": "string", "maxLength": 1500 },
+        "calories": { "type": "integer" },
+        "proteinGrams": { "type": "integer" },
+        "carbsGrams": { "type": "integer" },
+        "fatGrams": { "type": "integer" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "logType", "date", "title", "createdAt", "updatedAt"]
+    },
+    "FinanceRecord": {
+      "title": "FinanceRecord",
+      "description": "Financial transaction, category budget, or savings goal stored in integer minor units (cents).",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recordType": { "type": "string", "enum": ["expense", "income", "budget", "savings_goal", "subscription"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "category": { "type": "string", "maxLength": 64 },
+        "accountName": { "type": "string", "maxLength": 64 },
+        "amountMinor": { "type": "integer" },
+        "targetAmountMinor": { "type": "integer" },
+        "date": { "type": "string", "maxLength": 16 },
+        "isRecurring": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "recordType", "title", "category", "accountName", "amountMinor", "date", "createdAt", "updatedAt"]
+    },
+    "KnowledgeItem": {
+      "title": "KnowledgeItem",
+      "description": "Book, course, podcast, article, or unified knowledge note.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "itemType": { "type": "string", "enum": ["book", "course", "podcast", "article", "note"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "authorOrSource": { "type": "string", "maxLength": 150 },
+        "status": { "type": "string", "enum": ["wishlist", "planned", "in_progress", "paused", "completed"] },
+        "progressCurrent": { "type": "integer" },
+        "progressTotal": { "type": "integer" },
+        "progressUnit": { "type": "string", "maxLength": 32 },
+        "rating": { "type": "integer" },
+        "tags": { "type": "string", "maxLength": 200 },
+        "takeaways": { "type": "string", "maxLength": 4000 },
+        "linkedEntityId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "itemType", "title", "status", "progressCurrent", "progressTotal", "progressUnit", "createdAt", "updatedAt"]
+    },
+    "GoalHabit": {
+      "title": "GoalHabit",
+      "description": "Long-term goal, project milestone, or recurring habit with streak tracking.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recordType": { "type": "string", "enum": ["goal", "habit", "quest", "reward"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "whyReason": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["active", "completed", "paused", "stalled"] },
+        "frequency": { "type": "string", "enum": ["daily", "weekly", "custom", "once"] },
+        "progressPercent": { "type": "integer" },
+        "streakCount": { "type": "integer" },
+        "completedToday": { "type": "boolean" },
+        "lastCompletedDate": { "type": "string", "maxLength": 16 },
+        "targetDate": { "type": "string", "maxLength": 16 },
+        "xpReward": { "type": "integer" },
+        "coinCostOrReward": { "type": "integer" },
+        "nextSmallAction": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "recordType", "title", "status", "frequency", "progressPercent", "streakCount", "completedToday", "xpReward", "coinCostOrReward", "createdAt", "updatedAt"]
+    },
+    "AiActionLog": {
+      "title": "AiActionLog",
+      "description": "Audit log and approval queue for Spoon Feeder AI actions and cross-module event bus records.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actionTitle": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "toolName": { "type": "string", "maxLength": 100 },
+        "permissionLevel": { "type": "string", "enum": ["read", "routine_write", "consequential", "destructive"] },
+        "status": { "type": "string", "enum": ["executed", "pending_approval", "approved", "rejected", "undone"] },
+        "targetModule": { "type": "string", "maxLength": 64 },
+        "summary": { "type": "string", "maxLength": 1500 },
+        "payloadJson": { "type": "string", "maxLength": 4000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "actionTitle", "toolName", "permissionLevel", "status", "targetModule", "summary", "createdAt", "updatedAt"]
+    },
+    "DailyReview": {
+      "title": "DailyReview",
+      "description": "Daily reflection and explainable 5-dimension rating without punishing illness or blockers.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "maxLength": 16 },
+        "energyLevel": { "type": "string", "enum": ["high", "moderate", "low", "recovering"] },
+        "commitmentScore": { "type": "integer" },
+        "completionScore": { "type": "integer" },
+        "consistencyScore": { "type": "integer" },
+        "planningAccuracyScore": { "type": "integer" },
+        "wellbeingScore": { "type": "integer" },
+        "wins": { "type": "string", "maxLength": 1000 },
+        "obstacles": { "type": "string", "maxLength": 1000 },
+        "tomorrowAdjustment": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "date", "energyLevel", "commitmentScore", "completionScore", "consistencyScore", "planningAccuracyScore", "wellbeingScore", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private single-owner profile, gamification rank/coins, and settings."
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Unified tasks with status, priority, duration, and cross-module links."
+    },
+    "/calendar_events/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEvent" },
+      "description": "Calendar events, fixed commitments, prayer anchors, and scheduled sessions."
+    },
+    "/study_modules/{moduleId}": {
+      "schema": { "$ref": "#/entities/StudyModule" },
+      "description": "Academic modules and exam countdowns."
+    },
+    "/study_items/{itemId}": {
+      "schema": { "$ref": "#/entities/StudyItem" },
+      "description": "Lectures, FSRS flashcards, and spaced-repetition revision items."
+    },
+    "/health_logs/{logId}": {
+      "schema": { "$ref": "#/entities/HealthLog" },
+      "description": "Body measurements, workouts, and nutrition meal entries."
+    },
+    "/finance_records/{recordId}": {
+      "schema": { "$ref": "#/entities/FinanceRecord" },
+      "description": "Transactions, budgets, subscriptions, and savings goals in integer minor units."
+    },
+    "/knowledge_items/{itemId}": {
+      "schema": { "$ref": "#/entities/KnowledgeItem" },
+      "description": "Books, courses, podcasts, and unified knowledge notes."
+    },
+    "/goals_habits/{recordId}": {
+      "schema": { "$ref": "#/entities/GoalHabit" },
+      "description": "Goals, habits, quests, and user-configured rewards."
+    },
+    "/ai_action_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AiActionLog" },
+      "description": "Spoon Feeder AI action audit log, permission approvals, and undo records."
+    },
+    "/daily_reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/DailyReview" },
+      "description": "Explainable 5-dimension daily ratings and evening reflections."
+    }
+  }
+}
