@@ -2,6 +2,11 @@ import React, { useState, useMemo } from 'react';
 import { useLifeOS } from '../context/LifeOSContext.tsx';
 import { PomodoroCategory, PomodoroMode } from '../types.ts';
 import {
+  StudyEnvironmentMode,
+  AmbientSoundType,
+} from '../services/rpgGamificationEngine.ts';
+import { PixelStudyRoomCanvas } from './PixelStudyRoomCanvas.tsx';
+import {
   Play,
   Pause,
   RotateCcw,
@@ -17,6 +22,10 @@ import {
   Flame,
   Clock,
   Sliders,
+  Sun,
+  CloudRain,
+  Moon,
+  ShoppingBag,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -94,12 +103,17 @@ export const PomodoroView: React.FC = () => {
     completePomodoroSession,
     deletePomodoroSession,
     requestPomodoroNotificationPermission,
+    rpgState,
+    setRpgEnvironment,
+    setRpgAmbientSound,
+    openRpgWorld,
   } = useLifeOS();
 
   const [sessionNotes, setSessionNotes] = useState('');
   const [manualMinutes, setManualMinutes] = useState(25);
   const [showManualLogModal, setShowManualLogModal] = useState(false);
   const [filterCategory, setFilterCategory] = useState<string>('ALL');
+  const [completionBanner, setCompletionBanner] = useState<string | null>(null);
 
   const openTasks = useMemo(
     () => tasks.filter((t) => t.status !== 'completed'),
@@ -244,8 +258,30 @@ export const PomodoroView: React.FC = () => {
   const handleManualLogSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     await completePomodoroSession(manualMinutes, sessionNotes);
+    setCompletionBanner(
+      `Pomodoro Complete! Awarded +${manualMinutes * 2} XP & +${Math.max(
+        8,
+        Math.round(manualMinutes * 0.6)
+      )} Life Coins!`
+    );
+    setTimeout(() => setCompletionBanner(null), 5000);
     setSessionNotes('');
     setShowManualLogModal(false);
+  };
+
+  const handleFinishSessionWithReward = async () => {
+    const mins =
+      pomodoroState.elapsedFocusSeconds >= 60
+        ? Math.round(pomodoroState.elapsedFocusSeconds / 60)
+        : pomodoroState.focusMinutesPreset;
+    await completePomodoroSession(undefined, sessionNotes);
+    setCompletionBanner(
+      `Session Complete! Earned +${mins * 2} XP & +${Math.max(
+        8,
+        Math.round(mins * 0.6)
+      )} Life Coins! Related Daily & Weekly Missions updated.`
+    );
+    setTimeout(() => setCompletionBanner(null), 5000);
   };
 
   return (
@@ -302,6 +338,15 @@ export const PomodoroView: React.FC = () => {
 
           <button
             type="button"
+            onClick={() => openRpgWorld('shop')}
+            className="px-3.5 py-2 rounded-xl bg-[#294C45] border border-[#D7B779]/50 text-[#D7B779] text-xs font-semibold hover:opacity-90 flex items-center gap-1.5"
+          >
+            <ShoppingBag className="w-3.5 h-3.5" />
+            Customize Room &amp; Shop
+          </button>
+
+          <button
+            type="button"
             onClick={() => setShowManualLogModal(true)}
             className="px-3.5 py-2 rounded-xl bg-[#9BB9A2] text-[#0F1613] text-xs font-semibold hover:opacity-90 flex items-center gap-1.5"
           >
@@ -309,6 +354,96 @@ export const PomodoroView: React.FC = () => {
             Log Study Session
           </button>
         </div>
+      </div>
+
+      {/* Satisfying Completion Reward Animation Banner */}
+      {completionBanner && (
+        <div className="p-4 rounded-2xl bg-[#172A32] border-2 border-[#D7B779] text-[#E8DDC8] flex items-center justify-between shadow-2xl animate-pulse">
+          <div className="flex items-center gap-3">
+            <Sparkles className="w-5 h-5 text-[#D7B779]" />
+            <span className="text-xs sm:text-sm font-bold">{completionBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => openRpgWorld('missions')}
+            className="px-3 py-1.5 rounded-lg bg-[#D7B779] text-[#172A32] text-xs font-extrabold"
+          >
+            View Missions →
+          </button>
+        </div>
+      )}
+
+      {/* IMMERSIVE PIXEL-ART STUDY ROOM + AMBIENT ENVIRONMENT BAR */}
+      <div className="p-4 md:p-5 rounded-2xl bg-[#172A32] border-2 border-[#D7B779]/40 space-y-4 shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[#D7B779]">
+              PIXEL-ART STUDY ROOM · LIVE FOCUS ENVIRONMENT
+            </span>
+            <h2 className="text-base font-bold text-[#E8DDC8]">
+              Your Customized Study Sanctuary
+            </h2>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Environment Switcher */}
+            {(
+              [
+                { id: 'morning_study', label: 'Morning Study', icon: Sun },
+                { id: 'rainy_day', label: 'Rainy Day', icon: CloudRain },
+                { id: 'night_study', label: 'Night Study', icon: Moon },
+              ] as { id: StudyEnvironmentMode; label: string; icon: typeof Sun }[]
+            ).map((env) => {
+              const Icon = env.icon;
+              const isActive = rpgState.activeEnvironment === env.id;
+              return (
+                <button
+                  key={env.id}
+                  type="button"
+                  onClick={() => setRpgEnvironment(env.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                    isActive
+                      ? 'bg-[#D7B779] text-[#172A32]'
+                      : 'bg-[#1E353F] text-[#E8DDC8] hover:bg-[#294C45]'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  <span>{env.label}</span>
+                </button>
+              );
+            })}
+
+            {/* Ambient Sound Selector */}
+            <select
+              value={rpgState.activeAmbientSound}
+              onChange={(e) => setRpgAmbientSound(e.target.value as AmbientSoundType)}
+              className="px-3 py-1.5 rounded-xl bg-[#1E353F] border border-[#D7B779]/40 text-xs text-[#E8DDC8]"
+            >
+              <option value="off">Ambient Audio: Off</option>
+              <option value="rain">Rain on Window</option>
+              <option value="fireplace">Cozy Hearth Crackling</option>
+              <option value="night_wind">Midnight Forest Wind</option>
+              <option value="brown_noise">Deep Focus Warm Noise</option>
+            </select>
+
+            <button
+              type="button"
+              onClick={() => openRpgWorld('study_room')}
+              className="px-3 py-1.5 rounded-xl bg-[#294C45] border border-[#D7B779]/50 text-[#D7B779] text-xs font-bold hover:bg-[#356158]"
+            >
+              Full RPG Room Editor →
+            </button>
+          </div>
+        </div>
+
+        <PixelStudyRoomCanvas
+          placedItems={rpgState.placedItems}
+          avatar={rpgState.avatar}
+          environment={rpgState.activeEnvironment}
+          ambientSound={rpgState.activeAmbientSound}
+          ambientVolume={rpgState.ambientVolume}
+          isPomodoroRunning={pomodoroState.running}
+        />
       </div>
 
       {/* 4 KPI Cards */}
@@ -503,7 +638,7 @@ export const PomodoroView: React.FC = () => {
               {pomodoroState.mode === 'focus' && (
                 <button
                   type="button"
-                  onClick={() => completePomodoroSession(undefined, sessionNotes)}
+                  onClick={handleFinishSessionWithReward}
                   className="px-4 py-2.5 rounded-xl bg-[#6EBF8B]/20 border border-[#6EBF8B]/40 hover:bg-[#6EBF8B]/30 text-[#6EBF8B] text-xs font-semibold flex items-center gap-1.5"
                   title="Finish now and log study minutes to your Study Time"
                 >

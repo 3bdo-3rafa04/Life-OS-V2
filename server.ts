@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -16,7 +17,7 @@ import {
   addDaysToDateStr,
   ScheduleGenerationInput,
   EnergyLevel,
-} from './src/services/schedulingEngine';
+} from './src/services/schedulingEngine.ts';
 
 dotenv.config();
 
@@ -1742,9 +1743,173 @@ If the document includes class times, lab sessions, or exam dates/times, include
     }
   });
 
+  // AI Personalized RPG Missions Generator
+  app.post('/api/ai/rpg-missions', async (req, res) => {
+    const context = req.body?.contextSnapshot || {};
+    const todayDate = String(context.todayDate || new Date().toISOString().split('T')[0]);
+    const openTasksCount = Number(context.openTasksCount || 0);
+    const dueRevisionsCount = Number(context.dueRevisionsCount || 0);
+    const upcomingExam = context.upcomingExam || null;
+    const energyLevel = String(context.energyLevel || 'medium');
+
+    const buildDeterministicMissions = () => {
+      const pomoTarget = energyLevel === 'low' ? 2 : 3;
+      const taskTarget = Math.max(2, Math.min(5, openTasksCount || 3));
+      const revTarget = Math.max(2, Math.min(6, dueRevisionsCount || 3));
+      return [
+        {
+          id: `ai_pomo_${todayDate}_${Date.now()}`,
+          title:
+            energyLevel === 'low'
+              ? 'Sustainable Focus Quest (Energy-Adjusted)'
+              : ' Guild Focus Sprint',
+          description: `Complete ${pomoTarget} focused Pomodoro sessions today tailored to your ${energyLevel} energy profile.`,
+          missionType: 'daily',
+          difficulty: energyLevel === 'low' ? 'Easy' : 'Medium',
+          targetValue: pomoTarget,
+          currentValue: 0,
+          unit: 'sessions',
+          xpReward: pomoTarget * 35,
+          coinReward: pomoTarget * 15,
+          metricKey: 'daily_pomodoros',
+          periodKey: todayDate,
+          isAiGenerated: true,
+        },
+        {
+          id: `ai_exam_${todayDate}_${Date.now() + 1}`,
+          title: upcomingExam
+            ? `Exam Vanguard: ${upcomingExam.code || upcomingExam.title}`
+            : 'Active Recall Expedition',
+          description: upcomingExam
+            ? `Review ${revTarget} study items to prepare for ${upcomingExam.title} (${upcomingExam.examDate}).`
+            : `Review ${revTarget} flashcards or lectures to strengthen long-term retention.`,
+          missionType: 'daily',
+          difficulty: 'Medium',
+          targetValue: revTarget,
+          currentValue: 0,
+          unit: 'items',
+          xpReward: 85,
+          coinReward: 35,
+          metricKey: 'daily_flashcards',
+          periodKey: todayDate,
+          isAiGenerated: true,
+        },
+        {
+          id: `ai_tasks_${todayDate}_${Date.now() + 2}`,
+          title: 'Priority Momentum Contract',
+          description: `Complete ${taskTarget} priority tasks without overloading your schedule.`,
+          missionType: 'weekly',
+          difficulty: 'Medium',
+          targetValue: taskTarget,
+          currentValue: 0,
+          unit: 'tasks',
+          xpReward: 120,
+          coinReward: 50,
+          metricKey: 'daily_tasks',
+          periodKey: todayDate,
+          isAiGenerated: true,
+        },
+      ];
+    };
+
+    try {
+      const ai = getAiClient();
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `Generate 3 realistic, motivating RPG missions for a student/professional based on their real Life OS context:
+- Today Date: ${todayDate}
+- Open Tasks: ${openTasksCount} (Sample: ${JSON.stringify(context.sampleTasks || [])})
+- Due Revisions/Flashcards: ${dueRevisionsCount}
+- Next Upcoming Exam: ${JSON.stringify(upcomingExam)}
+- Current Energy Profile: ${energyLevel}
+- Current Streak: ${context.streakDays || 0} days
+
+Rules:
+- Respect their energy level and avoid unhealthy overwork.
+- Connect each mission to one of these exact metricKey values: "daily_pomodoros", "daily_tasks", "daily_lectures", "daily_flashcards", "daily_workout", or "weekly_study_hours".
+- Return JSON array of 3 missions.`,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                missionType: { type: Type.STRING, description: 'daily or weekly' },
+                difficulty: { type: Type.STRING, description: 'Easy, Medium, or Hard' },
+                targetValue: { type: Type.INTEGER },
+                unit: { type: Type.STRING },
+                xpReward: { type: Type.INTEGER },
+                coinReward: { type: Type.INTEGER },
+                metricKey: {
+                  type: Type.STRING,
+                  description:
+                    'daily_pomodoros, daily_tasks, daily_lectures, daily_flashcards, daily_workout, or weekly_study_hours',
+                },
+              },
+              required: [
+                'title',
+                'description',
+                'missionType',
+                'difficulty',
+                'targetValue',
+                'unit',
+                'xpReward',
+                'coinReward',
+                'metricKey',
+              ],
+            },
+          },
+        },
+      });
+
+      const parsed = JSON.parse((response.text ?? '[]').trim());
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return res.json({ missions: buildDeterministicMissions() });
+      }
+      const validMetricKeys = new Set([
+        'daily_pomodoros',
+        'daily_tasks',
+        'daily_lectures',
+        'daily_flashcards',
+        'daily_workout',
+        'weekly_study_hours',
+      ]);
+      const missions = parsed.slice(0, 3).map((m: any, idx: number) => ({
+        id: `ai_mission_${todayDate}_${Date.now()}_${idx}`,
+        title: String(m.title || 'AI Guild Contract').slice(0, 80),
+        description: String(m.description || 'Complete verified focus activity.').slice(0, 200),
+        missionType: m.missionType === 'weekly' ? 'weekly' : 'daily',
+        difficulty: ['Easy', 'Medium', 'Hard', 'Epic'].includes(m.difficulty)
+          ? m.difficulty
+          : 'Medium',
+        targetValue: Math.max(1, Math.min(25, Number(m.targetValue) || 3)),
+        currentValue: 0,
+        unit: String(m.unit || 'actions').slice(0, 20),
+        xpReward: Math.max(25, Math.min(300, Number(m.xpReward) || 75)),
+        coinReward: Math.max(10, Math.min(150, Number(m.coinReward) || 30)),
+        metricKey: validMetricKeys.has(m.metricKey) ? m.metricKey : 'daily_pomodoros',
+        periodKey: todayDate,
+        isAiGenerated: true,
+      }));
+      return res.json({ missions });
+    } catch {
+      return res.json({ missions: buildDeterministicMissions() });
+    }
+  });
+
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        hmr: false,
+        ws: { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1756,7 +1921,7 @@ If the document includes class times, lab sessions, or exam dates/times, include
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Life OS Server running on http://localhost:${PORT}`);
   });
 }

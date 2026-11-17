@@ -20,7 +20,15 @@ export type SubPageMap = {
   pomodoro: 'timer' | 'analytics' | 'history';
   study: 'modules' | 'exams' | 'flashcards' | 'schedule_import' | 'analytics';
   library: 'books' | 'courses' | 'podcasts';
-  health: 'measurements' | 'workouts' | 'nutrition' | 'sleep_water';
+  health:
+    | 'measurements'
+    | 'workouts'
+    | 'pr_tracker'
+    | 'training_load'
+    | 'workout_calendar'
+    | 'nutrition'
+    | 'weekly_coach'
+    | 'sleep_water';
   finance: 'transactions' | 'budgets' | 'subscriptions' | 'savings';
   goals: 'goals' | 'projects' | 'habits';
   rank: 'quests' | 'achievements' | 'rewards';
@@ -266,3 +274,193 @@ export interface DailyReviewRecord {
   obstacles?: string;
   tomorrowAdjustment?: string;
 }
+
+export type MuscleGroup =
+  | 'Chest'
+  | 'Back'
+  | 'Legs'
+  | 'Shoulders'
+  | 'Arms'
+  | 'Core'
+  | 'Full Body';
+
+export type ExerciseMechanicsType = 'compound' | 'isolation' | 'bodyweight' | 'cardio';
+
+export interface WorkoutExerciseEntry {
+  exerciseName: string;
+  muscleGroup: MuscleGroup;
+  exerciseType: ExerciseMechanicsType;
+  sets: number;
+  reps: number;
+  weightKg: number;
+  rpe?: number;
+  isActualTested1RM?: boolean;
+  estimated1RM?: number;
+}
+
+export interface PersonalRecordHistoryPoint {
+  date: string;
+  weightKg: number;
+  reps: number;
+  estimated1RM: number;
+  actualTested1RM?: number;
+  isActualTested1RM: boolean;
+  workoutId?: string;
+}
+
+export interface PersonalRecord {
+  id: string;
+  ownerId: string;
+  exerciseName: string;
+  muscleGroup: MuscleGroup;
+  exerciseType: ExerciseMechanicsType;
+  maxWeightKg: number;
+  repsAtMaxWeight: number;
+  maxReps: number;
+  weightAtMaxReps: number;
+  bestEstimated1RM: number;
+  bestActualTested1RM?: number;
+  isActualTested1RM: boolean;
+  bestPerformanceSummary: string;
+  achievedDate: string;
+  workoutId?: string;
+  previousRecords: PersonalRecordHistoryPoint[];
+  updatedAt: string;
+}
+
+export interface TrainingLoadLog {
+  id: string;
+  ownerId: string;
+  workoutId: string;
+  date: string;
+  workoutTitle: string;
+  durationMinutes: number;
+  rpe: number;
+  totalSets: number;
+  rawVolumeKg: number;
+  adjustedVolumeLoad: number;
+  setsByMuscleGroup: Partial<Record<MuscleGroup, number>>;
+  volumeByMuscleGroup: Partial<Record<MuscleGroup, number>>;
+  exercises: WorkoutExerciseEntry[];
+  createdAt: string;
+}
+
+export interface RecoveryLog {
+  id: string;
+  ownerId: string;
+  date: string;
+  muscleSoreness: number;
+  fatigueLevel: number;
+  sleepQuality: number;
+  sleepHours: number;
+  energyLevel: number;
+  generalRecoveryScore: number;
+  soreMuscleGroups?: MuscleGroup[];
+  notes?: string;
+  createdAt: string;
+}
+
+export type WorkoutScheduleStatus = 'planned' | 'completed' | 'missed' | 'rest_day';
+
+export interface WorkoutSchedule {
+  id: string;
+  ownerId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  templateId?: string;
+  templateName: string;
+  targetMuscleGroups: MuscleGroup[];
+  plannedDurationMinutes: number;
+  plannedExercises: WorkoutExerciseEntry[];
+  status: WorkoutScheduleStatus;
+  completedWorkoutId?: string;
+  notes?: string;
+  updatedAt: string;
+}
+
+export interface WeightTrendSnapshot {
+  id: string;
+  ownerId: string;
+  date: string;
+  actualWeightKg: number;
+  rolling7DayAvgKg: number | null;
+  measurementsIn7DayWindow: number;
+  weeklyChangeKg: number | null;
+  monthlyChangeKg: number | null;
+  weeklyChangeRatePct: number | null;
+  targetWeightKg?: number;
+  distanceToTargetKg: number | null;
+  isPlateauDetected: boolean;
+  isShortTermFluctuation: boolean;
+  trendStatus: 'on_track' | 'losing' | 'gaining' | 'plateau' | 'fluctuation_spike' | 'insufficient_data';
+  explanation: string;
+  biweeklyNutritionRecommendation: string;
+}
+
+export interface WeeklyFitnessReport {
+  id: string;
+  ownerId: string;
+  weekStartDate: string;
+  weekEndDate: string;
+  generatedAt: string;
+  referencedDataSummary: {
+    measurementCount: number;
+    completedWorkoutCount: number;
+    plannedWorkoutCount: number;
+    mealLogCount: number;
+    recoveryLogCount: number;
+    newPrCount: number;
+    insufficientDataWarnings: string[];
+  };
+  sections: {
+    weeklyOverview: {
+      recordedFacts: string[];
+      aiInterpretation: string;
+    };
+    bodyProgress: {
+      currentWeightKg: number | null;
+      weeklyAvgWeightKg: number | null;
+      weightChangeKg: number | null;
+      targetWeightKg: number | null;
+      recordedFacts: string[];
+      aiInterpretation: string;
+    };
+    workoutPerformance: {
+      completedWorkouts: number;
+      plannedWorkouts: number;
+      totalVolumeKg: number;
+      totalSets: number;
+      newPersonalRecords: string[];
+      muscleGroupSets: Record<MuscleGroup, number>;
+      recordedFacts: string[];
+      aiInterpretation: string;
+    };
+    nutritionPerformance: {
+      avgDailyCalories: number | null;
+      avgProteinGrams: number | null;
+      avgCarbsGrams: number | null;
+      avgFatGrams: number | null;
+      adherencePercent: number | null;
+      daysLogged: number;
+      trainingAdjustedCalorieTarget: number;
+      trainingAdjustedProteinTarget: number;
+      recordedFacts: string[];
+      aiInterpretation: string;
+    };
+    recoveryAndTrainingLoad: {
+      avgRecoveryScore: number | null;
+      avgSleepHours: number | null;
+      avgSleepQuality: number | null;
+      avgFatigue: number | null;
+      avgSoreness: number | null;
+      loadStatus: 'optimal' | 'high_fatigue_risk' | 'under_training' | 'insufficient_data';
+      recordedFacts: string[];
+      aiInterpretation: string;
+    };
+    achievements: string[];
+    areasForImprovement: string[];
+    recommendationsForNextWeek: string[];
+  };
+}
+

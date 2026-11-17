@@ -1,12 +1,17 @@
 import React, { useState } from 'react';
 import { useLifeOS } from '../context/LifeOSContext';
-import { Plus, Trash2, Check, Trophy, Flame, Coins, Gift, Sparkles } from 'lucide-react';
+import { PixelAvatarSprite } from './PixelStudyRoomCanvas';
+import { Plus, Trash2, Check, Trophy, Flame, Coins, Gift, Sparkles, Gamepad2 } from 'lucide-react';
 
 export const GoalsRankView: React.FC = () => {
   const {
     profile,
     goalsHabits,
     tasks,
+    rpgState,
+    rpgRankEval,
+    rpgLevelInfo,
+    openRpgWorld,
     createGoalHabit,
     toggleHabitOrGoalCompletion,
     redeemReward,
@@ -42,20 +47,12 @@ export const GoalsRankView: React.FC = () => {
   const quests = goalsHabits.filter((g) => g.recordType === 'quest');
   const rewards = goalsHabits.filter((g) => g.recordType === 'reward');
 
-  const level = profile?.level ?? 1;
+  const level = rpgLevelInfo.level;
   const xp = profile?.xp ?? 0;
   const coins = profile?.coins ?? 0;
   const streakDays = profile?.streakDays ?? 0;
-  const nextLevelXp = level * 250;
-  const currentLevelProgress = Math.min(100, Math.round(((xp % 250) / 250) * 100));
-
-  const getRankTitle = (lvl: number) => {
-    if (lvl >= 25) return 'Grandmaster';
-    if (lvl >= 15) return 'Commander';
-    if (lvl >= 10) return 'Architect';
-    if (lvl >= 5) return 'Strategist';
-    return 'Initiate';
-  };
+  const nextLevelXp = rpgLevelInfo.xpRequiredForNextLevel;
+  const currentLevelProgress = rpgLevelInfo.progressPercent;
 
   const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -276,54 +273,95 @@ export const GoalsRankView: React.FC = () => {
 
           {/* Rank & Gamification Row */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            {/* Level Card */}
-            <div className="lg:col-span-4 bg-[var(--bg-card)] border border-[var(--border-subtle)] rounded-2xl p-6 flex flex-col justify-between">
+            {/* Level & Pixel-Art RPG World Card (Clickable Rank Component) */}
+            <div
+              onClick={() => openRpgWorld('study_room')}
+              className="lg:col-span-4 bg-[#172A32] border-2 border-[#D7B779]/50 hover:border-[#D7B779] rounded-2xl p-6 flex flex-col justify-between cursor-pointer transition-all group text-[#E8DDC8]"
+            >
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">
-                    Rank &amp; Progression
+                  <span className="text-xs font-semibold text-[#D7B779] uppercase tracking-wider flex items-center gap-1.5">
+                    <Gamepad2 className="w-4 h-4" />
+                    Rank &amp; RPG World
                   </span>
-                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#9BB9A2]/15 text-[#9BB9A2]">
-                    {getRankTitle(level)}
+                  <span
+                    className="px-2.5 py-0.5 rounded-md text-[11px] font-bold border"
+                    style={{
+                      backgroundColor: `${rpgRankEval.badgeColor}20`,
+                      color: rpgRankEval.badgeColor,
+                      borderColor: `${rpgRankEval.badgeColor}60`,
+                    }}
+                  >
+                    {rpgRankEval.rank}
                   </span>
                 </div>
-                <div className="flex items-baseline gap-3 mb-2">
-                  <span className="text-3xl font-bold">Level {level}</span>
-                  <span className="text-xs text-[var(--text-muted)]">{xp.toLocaleString()} XP total</span>
+
+                <div className="flex items-center gap-3.5 mb-3">
+                  <div className="w-14 h-14 rounded-xl bg-[#0F1D23] border-2 border-[#D7B779] flex items-center justify-center shrink-0">
+                    <PixelAvatarSprite avatar={rpgState.avatar} size={48} />
+                  </div>
+                  <div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-bold text-[#E8DDC8]">Level {level}</span>
+                      <span className="text-xs font-mono text-[#D7B779]">
+                        {xp.toLocaleString()} XP
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#E8DDC8]/75 mt-0.5">
+                      {rpgRankEval.nextRank
+                        ? `Next Rank: ${rpgRankEval.nextRank} (${rpgRankEval.progressPercent}%)`
+                        : 'Highest Rank Achieved!'}
+                    </p>
+                  </div>
                 </div>
-                <div className="w-full h-2 rounded-full bg-[var(--bg-secondary)] overflow-hidden mb-2">
+
+                <div className="w-full h-2.5 rounded-md bg-[#0F1D23] border border-[#294C45] overflow-hidden mb-1.5">
                   <div
-                    className="h-full rounded-full bg-[#9BB9A2] transition-all"
+                    className="h-full bg-gradient-to-r from-[#294C45] via-[#6EBF8B] to-[#D7B779] transition-all"
                     style={{ width: `${currentLevelProgress}%` }}
                   />
                 </div>
-                <p className="text-[11px] text-[var(--text-muted)]">
-                  {250 - (xp % 250)} XP to Level {level + 1} (Target: {nextLevelXp} XP)
+                <p className="text-[11px] text-[#E8DDC8]/70 font-mono">
+                  {rpgLevelInfo.currentLevelXp} / {nextLevelXp} XP to Level {level + 1}
                 </p>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 pt-5 mt-5 border-t border-[var(--border-subtle)]">
-                <div className="p-3 rounded-xl bg-[var(--bg-secondary)]/50 text-center">
-                  <div className="flex items-center justify-center gap-1 text-[#E5B567] font-bold text-base">
-                    <Flame className="w-4 h-4" />
-                    {streakDays}d
+              <div className="space-y-3 pt-4 mt-4 border-t border-[#294C45]">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2.5 rounded-xl bg-[#0F1D23]/80 border border-[#294C45] text-center">
+                    <div className="flex items-center justify-center gap-1 text-[#B97862] font-bold text-sm font-mono">
+                      <Flame className="w-3.5 h-3.5" />
+                      {streakDays}d
+                    </div>
+                    <div className="text-[10px] text-[#E8DDC8]/65 mt-0.5">Streak</div>
                   </div>
-                  <div className="text-[10px] text-[var(--text-muted)] mt-0.5">Streak</div>
-                </div>
-                <div className="p-3 rounded-xl bg-[var(--bg-secondary)]/50 text-center">
-                  <div className="flex items-center justify-center gap-1 text-[#9BB9A2] font-bold text-base">
-                    <Coins className="w-4 h-4" />
-                    {coins}
+                  <div className="p-2.5 rounded-xl bg-[#0F1D23]/80 border border-[#294C45] text-center">
+                    <div className="flex items-center justify-center gap-1 text-[#D7B779] font-bold text-sm font-mono">
+                      <Coins className="w-3.5 h-3.5" />
+                      {coins}
+                    </div>
+                    <div className="text-[10px] text-[#E8DDC8]/65 mt-0.5">Life Coins</div>
                   </div>
-                  <div className="text-[10px] text-[var(--text-muted)] mt-0.5">Coins</div>
-                </div>
-                <div className="p-3 rounded-xl bg-[var(--bg-secondary)]/50 text-center">
-                  <div className="flex items-center justify-center gap-1 text-[#6EBF8B] font-bold text-base">
-                    <Trophy className="w-4 h-4" />
-                    {completedGoalsCount}
+                  <div className="p-2.5 rounded-xl bg-[#0F1D23]/80 border border-[#294C45] text-center">
+                    <div className="flex items-center justify-center gap-1 text-[#6EBF8B] font-bold text-sm font-mono">
+                      <Trophy className="w-3.5 h-3.5" />
+                      {rpgState.ownedItemIds.length}
+                    </div>
+                    <div className="text-[10px] text-[#E8DDC8]/65 mt-0.5">RPG Items</div>
                   </div>
-                  <div className="text-[10px] text-[var(--text-muted)] mt-0.5">Goals Won</div>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openRpgWorld('study_room');
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-[#D7B779] text-[#172A32] font-bold text-xs flex items-center justify-center gap-2 hover:opacity-95 transition-opacity"
+                >
+                  <Gamepad2 className="w-4 h-4" />
+                  Enter Pixel-Art RPG World &amp; Study Room
+                </button>
               </div>
             </div>
 
@@ -454,6 +492,15 @@ export const GoalsRankView: React.FC = () => {
                     })}
                   </div>
                 )}
+              </div>
+              <div className="pt-3 mt-3 border-t border-[var(--border-subtle)]">
+                <button
+                  type="button"
+                  onClick={() => openRpgWorld('shop')}
+                  className="w-full py-2 px-3 rounded-xl bg-[#172A32] text-[#D7B779] border border-[#D7B779]/40 text-xs font-semibold hover:bg-[#294C45] transition-colors"
+                >
+                  Browse 30+ Pixel-Art Study Room Items →
+                </button>
               </div>
             </div>
           </div>

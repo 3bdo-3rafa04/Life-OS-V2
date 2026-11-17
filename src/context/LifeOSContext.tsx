@@ -34,6 +34,12 @@ import {
   PomodoroCategory,
   PomodoroSessionRecord,
   PomodoroTimerState,
+  PersonalRecord,
+  TrainingLoadLog,
+  RecoveryLog,
+  WorkoutSchedule,
+  WeeklyFitnessReport,
+  WorkoutExerciseEntry,
 } from '../types.ts';
 import {
   PersistentMemoryStore,
@@ -52,6 +58,30 @@ import {
   formatMinutesToTime,
   addDaysToDateStr,
 } from '../services/schedulingEngine.ts';
+import {
+  parseExercisesFromWorkoutInput,
+  evaluateAndUpdatePersonalRecords,
+  buildTrainingLoadLog,
+  generateWeeklyFitnessCoachReport,
+} from '../services/fitnessIntelligenceEngine.ts';
+import {
+  RpgGamificationState,
+  RpgMission,
+  RpgAchievement,
+  RankEvaluation,
+  RpgRoomSlot,
+  RpgAvatarConfig,
+  RpgCoinTransaction,
+  StudyEnvironmentMode,
+  AmbientSoundType,
+  DEFAULT_RPG_STATE,
+  STARTER_ITEM_IDS,
+  RPG_SHOP_ITEMS,
+  calculateLevelProgress,
+  evaluateUserRank,
+  computeLiveMissions,
+  computeLiveAchievements,
+} from '../services/rpgGamificationEngine.ts';
 
 interface LifeOSContextValue {
   user: User | null;
@@ -198,6 +228,69 @@ interface LifeOSContextValue {
   confirmLearnedRule: (ruleId: string) => Promise<void>;
   deleteLearnedRule: (ruleId: string) => Promise<void>;
   resetPersistentMemory: () => Promise<void>;
+  // Section 14: Advanced Fitness Intelligence Ecosystem
+  personalRecords: PersonalRecord[];
+  trainingLoadLogs: TrainingLoadLog[];
+  recoveryLogs: RecoveryLog[];
+  workoutSchedules: WorkoutSchedule[];
+  weeklyFitnessReports: WeeklyFitnessReport[];
+  targetWeightKg: number;
+  prCelebrationBanner: string[] | null;
+  dismissPrCelebrationBanner: () => void;
+  setTargetWeightKg: (kg: number) => Promise<void>;
+  logWorkoutWithExercises: (data: {
+    title: string;
+    date: string;
+    durationMinutes: number;
+    rpe: number;
+    exercises: WorkoutExerciseEntry[];
+    notes?: string;
+    scheduleIdToComplete?: string;
+  }) => Promise<{ newlyBrokenPRs: PersonalRecord[]; celebrationMessages: string[] }>;
+  logRecoveryCheckIn: (
+    data: Omit<RecoveryLog, 'id' | 'ownerId' | 'createdAt'>
+  ) => Promise<void>;
+  deleteRecoveryLog: (id: string) => Promise<void>;
+  scheduleWorkoutSession: (
+    data: Omit<WorkoutSchedule, 'id' | 'ownerId' | 'updatedAt'>,
+    syncToLifeOSCalendar?: boolean
+  ) => Promise<void>;
+  updateWorkoutScheduleStatus: (
+    scheduleId: string,
+    status: WorkoutSchedule['status'],
+    rescheduleTo?: { date: string; startTime: string; endTime: string }
+  ) => Promise<void>;
+  deleteWorkoutSchedule: (scheduleId: string) => Promise<void>;
+  generateAndSaveWeeklyFitnessReport: () => Promise<WeeklyFitnessReport>;
+  deletePersonalRecord: (prId: string) => Promise<void>;
+  // Pixel-Art RPG Gamification Ecosystem
+  rpgState: RpgGamificationState;
+  rpgMissions: RpgMission[];
+  rpgAchievements: RpgAchievement[];
+  rpgRankEval: RankEvaluation;
+  rpgLevelInfo: ReturnType<typeof calculateLevelProgress>;
+  isRpgWorldOpen: boolean;
+  rpgWorldInitialTab: 'study_room' | 'missions' | 'shop' | 'inventory' | 'achievements';
+  openRpgWorld: (
+    tab?: 'study_room' | 'missions' | 'shop' | 'inventory' | 'achievements'
+  ) => void;
+  closeRpgWorld: () => void;
+  levelUpBanner: { newLevel: number; bonusCoins: number; rankTitle: string } | null;
+  dismissLevelUpBanner: () => void;
+  claimRpgMissionReward: (missionId: string) => Promise<boolean>;
+  claimRpgAchievementReward: (achievementId: string) => Promise<boolean>;
+  purchaseRpgShopItem: (itemId: string) => Promise<{ ok: boolean; message: string }>;
+  equipRpgItem: (itemId: string) => Promise<void>;
+  unequipRpgSlot: (slot: RpgRoomSlot) => Promise<void>;
+  moveRpgPlacedItem: (slot: RpgRoomSlot, dx: number, dy: number) => Promise<void>;
+  resetRpgPlacedItemPosition: (slot: RpgRoomSlot) => Promise<void>;
+  setRpgEnvironment: (env: StudyEnvironmentMode) => Promise<void>;
+  setRpgAmbientSound: (sound: AmbientSoundType, volume?: number) => Promise<void>;
+  updateRpgAvatar: (partial: Partial<RpgAvatarConfig>) => Promise<void>;
+  saveRpgRoomPreset: (name: string) => Promise<void>;
+  loadRpgRoomPreset: (presetId: string) => Promise<void>;
+  deleteRpgRoomPreset: (presetId: string) => Promise<void>;
+  generateAiPersonalizedMissions: () => Promise<RpgMission[]>;
 }
 
 const LifeOSContext = createContext<LifeOSContextValue | undefined>(undefined);
@@ -339,6 +432,86 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return null;
       }
     });
+
+  // Section 14: Advanced Fitness Intelligence State (persisted per authenticated user)
+  const [personalRecords, setPersonalRecords] = useState<PersonalRecord[]>(() => {
+    try {
+      const s = localStorage.getItem('lifeos_fitness_prs_v1');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [trainingLoadLogs, setTrainingLoadLogs] = useState<TrainingLoadLog[]>(() => {
+    try {
+      const s = localStorage.getItem('lifeos_fitness_tload_v1');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [recoveryLogs, setRecoveryLogs] = useState<RecoveryLog[]>(() => {
+    try {
+      const s = localStorage.getItem('lifeos_fitness_recovery_v1');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [workoutSchedules, setWorkoutSchedules] = useState<WorkoutSchedule[]>(() => {
+    try {
+      const s = localStorage.getItem('lifeos_fitness_schedules_v1');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [weeklyFitnessReports, setWeeklyFitnessReports] = useState<WeeklyFitnessReport[]>(() => {
+    try {
+      const s = localStorage.getItem('lifeos_fitness_reports_v1');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [targetWeightKg, setTargetWeightKgState] = useState<number>(() => {
+    try {
+      const s = localStorage.getItem('lifeos_fitness_target_weight_v1');
+      return s ? Number(s) || 72 : 72;
+    } catch {
+      return 72;
+    }
+  });
+  const [prCelebrationBanner, setPrCelebrationBanner] = useState<string[] | null>(null);
+
+  // Pixel-Art RPG Gamification State (persisted to localStorage + Firestore ai_action_logs)
+  const [rpgState, setRpgState] = useState<RpgGamificationState>(() => {
+    try {
+      const s = localStorage.getItem('lifeos_rpg_world_v1');
+      if (s) {
+        const parsed = JSON.parse(s);
+        return {
+          ...DEFAULT_RPG_STATE,
+          ...parsed,
+          ownedItemIds: Array.from(
+            new Set([...STARTER_ITEM_IDS, ...(parsed.ownedItemIds || [])])
+          ),
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_RPG_STATE;
+  });
+  const [isRpgWorldOpen, setIsRpgWorldOpen] = useState(false);
+  const [rpgWorldInitialTab, setRpgWorldInitialTab] = useState<
+    'study_room' | 'missions' | 'shop' | 'inventory' | 'achievements'
+  >('study_room');
+  const [levelUpBanner, setLevelUpBanner] = useState<{
+    newLevel: number;
+    bonusCoins: number;
+    rankTitle: string;
+  } | null>(null);
 
   // Poll authoritative server time every 30s in the user's configured timezone (default Africa/Cairo)
   useEffect(() => {
@@ -566,16 +739,136 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const awardXpAndCoins = async (xpDelta: number, coinsDelta: number) => {
-    if (!user || !profile) return;
-    const nextXp = Math.max(0, (profile.xp || 0) + xpDelta);
-    const nextLevel = Math.max(1, Math.floor(nextXp / 250) + 1);
-    const nextCoins = Math.max(0, (profile.coins || 0) + coinsDelta);
-    await updateProfileSettings({
-      xp: nextXp,
-      level: nextLevel,
-      coins: nextCoins,
-    });
+  const persistRpgState = async (
+    nextState: RpgGamificationState,
+    summaryNote = 'Updated Pixel RPG World'
+  ) => {
+    const stamped: RpgGamificationState = {
+      ...nextState,
+      ownedItemIds: Array.from(new Set([...STARTER_ITEM_IDS, ...nextState.ownedItemIds])),
+      updatedAt: new Date().toISOString(),
+    };
+    setRpgState(stamped);
+    try {
+      localStorage.setItem('lifeos_rpg_world_v1', JSON.stringify(stamped));
+    } catch {
+      // ignore
+    }
+
+    if (user) {
+      const compactPayload = JSON.stringify({
+        ownedItemIds: stamped.ownedItemIds,
+        placedItems: stamped.placedItems,
+        savedRoomPresets: stamped.savedRoomPresets.slice(0, 6),
+        activeEnvironment: stamped.activeEnvironment,
+        activeAmbientSound: stamped.activeAmbientSound,
+        ambientVolume: stamped.ambientVolume,
+        avatar: stamped.avatar,
+        customMissions: stamped.customMissions.slice(0, 8),
+        claimedMissionKeys: stamped.claimedMissionKeys.slice(-50),
+        claimedAchievementIds: stamped.claimedAchievementIds,
+        rewardedActivityIds: stamped.rewardedActivityIds.slice(-120),
+        transactions: stamped.transactions.slice(0, 25),
+        updatedAt: stamped.updatedAt,
+      }).slice(0, 3950);
+
+      const existingRpgLog = aiLogs.find((l) => l.toolName === 'gamification_rpg_store');
+      if (existingRpgLog) {
+        try {
+          await updateDoc(doc(db, 'ai_action_logs', existingRpgLog.id), {
+            summary: sanitizeString(summaryNote, 1500, 'Updated Pixel RPG World'),
+            payloadJson: compactPayload,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // ignore
+        }
+      } else {
+        await logAiAction({
+          actionTitle: 'Pixel RPG World Store',
+          toolName: 'gamification_rpg_store',
+          permissionLevel: 'routine_write',
+          status: 'executed',
+          targetModule: 'rank',
+          summary: sanitizeString(summaryNote, 1500, 'Initialized Pixel RPG World'),
+          payloadJson: compactPayload,
+        });
+      }
+    }
+  };
+
+  const awardXpAndCoins = async (
+    xpDelta: number,
+    coinsDelta: number,
+    meta?: {
+      activityKey?: string;
+      reason?: string;
+      sourceModule?: RpgCoinTransaction['sourceModule'];
+    }
+  ) => {
+    // Duplicate-reward prevention: never award XP or coins twice for the same completed activityKey
+    if (meta?.activityKey && rpgState.rewardedActivityIds.includes(meta.activityKey)) {
+      return;
+    }
+
+    const currentXp = profile?.xp ?? 0;
+    const currentCoins = profile?.coins ?? 0;
+    const prevLevelInfo = calculateLevelProgress(currentXp);
+
+    const nextXp = Math.max(0, currentXp + xpDelta);
+    const nextLevelInfo = calculateLevelProgress(nextXp);
+    const leveledUp = nextLevelInfo.level > prevLevelInfo.level && xpDelta > 0;
+    const levelBonusCoins = leveledUp ? nextLevelInfo.level * 15 : 0;
+    const nextCoins = Math.max(0, currentCoins + coinsDelta + levelBonusCoins);
+
+    if (profile) {
+      setProfile({
+        ...profile,
+        xp: nextXp,
+        level: nextLevelInfo.level,
+        coins: nextCoins,
+      });
+    }
+
+    if (user && profile) {
+      await updateProfileSettings({
+        xp: nextXp,
+        level: nextLevelInfo.level,
+        coins: nextCoins,
+      });
+    }
+
+    if (leveledUp) {
+      setLevelUpBanner({
+        newLevel: nextLevelInfo.level,
+        bonusCoins: levelBonusCoins,
+        rankTitle: `Level ${nextLevelInfo.level} Unlocked!`,
+      });
+    }
+
+    const newTx: RpgCoinTransaction = {
+      id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      type: coinsDelta + levelBonusCoins >= 0 ? 'earn' : 'spend',
+      amount: coinsDelta + levelBonusCoins,
+      xpDelta,
+      reason:
+        meta?.reason ||
+        (xpDelta > 0
+          ? `Earned +${xpDelta} XP & +${coinsDelta} Life Coins`
+          : `Spent ${Math.abs(coinsDelta)} Life Coins`),
+      sourceModule: meta?.sourceModule || 'task',
+      activityKey: meta?.activityKey,
+    };
+
+    const nextRpg: RpgGamificationState = {
+      ...rpgState,
+      rewardedActivityIds: meta?.activityKey
+        ? [...rpgState.rewardedActivityIds, meta.activityKey]
+        : rpgState.rewardedActivityIds,
+      transactions: [newTx, ...rpgState.transactions].slice(0, 60),
+    };
+    await persistRpgState(nextRpg, newTx.reason);
   };
 
   const createTask = async (data: Omit<TaskItem, 'id' | 'ownerId'>) => {
@@ -662,7 +955,11 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       if (partial.status === 'completed' && task.status !== 'completed') {
         const xpGain = task.priority === 'critical' ? 40 : task.priority === 'high' ? 30 : 20;
-        await awardXpAndCoins(xpGain, 10);
+        await awardXpAndCoins(xpGain, 10, {
+          activityKey: `task_complete_${task.id}`,
+          reason: `Completed Task: ${task.title}`,
+          sourceModule: 'task',
+        });
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `tasks/${task.id}`);
@@ -870,7 +1167,11 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       }
 
-      await awardXpAndCoins(35, 15);
+      await awardXpAndCoins(35, 15, {
+        activityKey: `study_rev_${item.id}_${todayDate}_${prevReps + 1}`,
+        reason: `Studied ${item.itemType}: ${item.title}`,
+        sourceModule: 'study',
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `study_items/${item.id}`);
     }
@@ -912,6 +1213,48 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       if (data.logType === 'workout') {
         await awardXpAndCoins(40, 15);
+        const parsedExercises = parseExercisesFromWorkoutInput(
+          data.exercisesSummary,
+          data.title,
+          data.volumeKg || 0,
+          data.rpe || 8
+        );
+        const loadEntry = buildTrainingLoadLog({
+          workoutId: ref.id,
+          workoutTitle: data.title,
+          date: data.date || todayDate,
+          durationMinutes: data.durationMinutes || 45,
+          rpe: data.rpe || 8,
+          exercises: parsedExercises,
+          fallbackVolumeKg: data.volumeKg,
+          ownerId: user.uid,
+        });
+        const prResult = evaluateAndUpdatePersonalRecords({
+          existingPRs: personalRecords,
+          workoutId: ref.id,
+          workoutDate: data.date || todayDate,
+          exercises: parsedExercises,
+          ownerId: user.uid,
+        });
+        const nextLoadLogs = [
+          loadEntry,
+          ...trainingLoadLogs.filter((l) => l.workoutId !== ref.id),
+        ];
+        setTrainingLoadLogs(nextLoadLogs);
+        setPersonalRecords(prResult.updatedPRs);
+        if (prResult.celebrationMessages.length > 0) {
+          setPrCelebrationBanner(prResult.celebrationMessages);
+        }
+        await persistFitnessIntelStore({
+          prs: prResult.updatedPRs,
+          tloads: nextLoadLogs,
+          recoveries: recoveryLogs,
+          schedules: workoutSchedules,
+          reports: weeklyFitnessReports,
+          targetW: targetWeightKg,
+          summaryNote: `Logged workout "${data.title}" (${loadEntry.rawVolumeKg}kg volume, ${prResult.newlyBrokenPRs.length} new PRs)`,
+        });
+
         if (scheduleOnCalendar) {
           await createCalendarEvent({
             title: `Workout: ${data.title}`,
@@ -1090,7 +1433,11 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updatedAt: serverTimestamp(),
       });
       if (nextDone) {
-        await awardXpAndCoins(record.xpReward || 25, record.coinCostOrReward || 10);
+        await awardXpAndCoins(record.xpReward || 25, record.coinCostOrReward || 10, {
+          activityKey: `habit_goal_${record.id}_${todayDate}`,
+          reason: `Completed ${record.recordType}: ${record.title}`,
+          sourceModule: 'habit',
+        });
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `goals_habits/${record.id}`);
@@ -1465,14 +1812,521 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     );
   }, [localPomodoroSessions, aiLogs]);
 
-  // Filter out internal pomodoro_session and persistent_memory records from visible AI Action Logs
+  // Filter out internal pomodoro_session, persistent_memory, fitness_intelligence_store, and gamification_rpg_store records from visible AI Action Logs
   const visibleAiLogs = React.useMemo(
     () =>
       aiLogs.filter(
-        (l) => l.toolName !== 'pomodoro_session' && l.toolName !== 'persistent_memory'
+        (l) =>
+          l.toolName !== 'pomodoro_session' &&
+          l.toolName !== 'persistent_memory' &&
+          l.toolName !== 'fitness_intelligence_store' &&
+          l.toolName !== 'gamification_rpg_store'
       ),
     [aiLogs]
   );
+
+  // Hydrate RPG Gamification store from Firestore ai_action_logs if remote snapshot exists
+  useEffect(() => {
+    const rpgLogs = aiLogs.filter(
+      (l) => l.toolName === 'gamification_rpg_store' && Boolean(l.payloadJson)
+    );
+    if (rpgLogs.length === 0) return;
+    const latest = rpgLogs[0];
+    if (!latest?.payloadJson) return;
+    try {
+      const parsed = JSON.parse(latest.payloadJson) as Partial<RpgGamificationState>;
+      if (parsed && parsed.updatedAt) {
+        setRpgState((prev) => {
+          if (!prev.updatedAt || parsed.updatedAt! > prev.updatedAt) {
+            const merged: RpgGamificationState = {
+              ...DEFAULT_RPG_STATE,
+              ...prev,
+              ...parsed,
+              ownedItemIds: Array.from(
+                new Set([
+                  ...STARTER_ITEM_IDS,
+                  ...prev.ownedItemIds,
+                  ...(parsed.ownedItemIds || []),
+                ])
+              ),
+            };
+            try {
+              localStorage.setItem('lifeos_rpg_world_v1', JSON.stringify(merged));
+            } catch {
+              // ignore
+            }
+            return merged;
+          }
+          return prev;
+        });
+      }
+    } catch {
+      // ignore malformed JSON
+    }
+  }, [aiLogs]);
+
+  // Hydrate Fitness Intelligence store from Firestore ai_action_logs if remote snapshot exists
+  useEffect(() => {
+    const fitLogs = aiLogs.filter(
+      (l) => l.toolName === 'fitness_intelligence_store' && Boolean(l.payloadJson)
+    );
+    if (fitLogs.length === 0) return;
+    const latest = fitLogs[0];
+    if (!latest?.payloadJson) return;
+    try {
+      const parsed = JSON.parse(latest.payloadJson);
+      if (parsed && typeof parsed === 'object') {
+        if (Array.isArray(parsed.prs) && parsed.prs.length > 0 && personalRecords.length === 0) {
+          setPersonalRecords(parsed.prs);
+        }
+        if (
+          Array.isArray(parsed.tloads) &&
+          parsed.tloads.length > 0 &&
+          trainingLoadLogs.length === 0
+        ) {
+          setTrainingLoadLogs(parsed.tloads);
+        }
+        if (
+          Array.isArray(parsed.recoveries) &&
+          parsed.recoveries.length > 0 &&
+          recoveryLogs.length === 0
+        ) {
+          setRecoveryLogs(parsed.recoveries);
+        }
+        if (
+          Array.isArray(parsed.schedules) &&
+          parsed.schedules.length > 0 &&
+          workoutSchedules.length === 0
+        ) {
+          setWorkoutSchedules(parsed.schedules);
+        }
+        if (Array.isArray(parsed.reports) && parsed.reports.length > 0 && weeklyFitnessReports.length === 0) {
+          setWeeklyFitnessReports(parsed.reports);
+        }
+        if (typeof parsed.targetW === 'number' && parsed.targetW > 0) {
+          setTargetWeightKgState(parsed.targetW);
+        }
+      }
+    } catch {
+      // ignore malformed JSON
+    }
+  }, [aiLogs]);
+
+  // Also ensure any existing completed workouts in health_logs have TrainingLoadLogs & PRs derived
+  useEffect(() => {
+    if (!user) return;
+    const workoutHealthLogs = healthLogs.filter((h) => h.logType === 'workout');
+    if (workoutHealthLogs.length === 0) return;
+    const existingIds = new Set(trainingLoadLogs.map((l) => l.workoutId));
+    const missing = workoutHealthLogs.filter((w) => !existingIds.has(w.id));
+    if (missing.length === 0) return;
+
+    let nextPRs = [...personalRecords];
+    const addedLoads: TrainingLoadLog[] = [];
+    for (const w of missing) {
+      const exList = parseExercisesFromWorkoutInput(
+        w.exercisesSummary,
+        w.title,
+        w.volumeKg || 0,
+        w.rpe || 8
+      );
+      addedLoads.push(
+        buildTrainingLoadLog({
+          workoutId: w.id,
+          workoutTitle: w.title,
+          date: w.date,
+          durationMinutes: w.durationMinutes || 45,
+          rpe: w.rpe || 8,
+          exercises: exList,
+          fallbackVolumeKg: w.volumeKg,
+          ownerId: user.uid,
+        })
+      );
+      const prEval = evaluateAndUpdatePersonalRecords({
+        existingPRs: nextPRs,
+        workoutId: w.id,
+        workoutDate: w.date,
+        exercises: exList,
+        ownerId: user.uid,
+      });
+      nextPRs = prEval.updatedPRs;
+    }
+
+    const mergedLoads = [...addedLoads, ...trainingLoadLogs].sort((a, b) =>
+      b.date.localeCompare(a.date)
+    );
+    setTrainingLoadLogs(mergedLoads);
+    setPersonalRecords(nextPRs);
+    try {
+      localStorage.setItem('lifeos_fitness_tload_v1', JSON.stringify(mergedLoads));
+      localStorage.setItem('lifeos_fitness_prs_v1', JSON.stringify(nextPRs));
+    } catch {
+      // ignore
+    }
+  }, [user, healthLogs]);
+
+  const persistFitnessIntelStore = async (params: {
+    prs: PersonalRecord[];
+    tloads: TrainingLoadLog[];
+    recoveries: RecoveryLog[];
+    schedules: WorkoutSchedule[];
+    reports: WeeklyFitnessReport[];
+    targetW: number;
+    summaryNote: string;
+  }) => {
+    try {
+      localStorage.setItem('lifeos_fitness_prs_v1', JSON.stringify(params.prs));
+      localStorage.setItem('lifeos_fitness_tload_v1', JSON.stringify(params.tloads));
+      localStorage.setItem('lifeos_fitness_recovery_v1', JSON.stringify(params.recoveries));
+      localStorage.setItem('lifeos_fitness_schedules_v1', JSON.stringify(params.schedules));
+      localStorage.setItem('lifeos_fitness_reports_v1', JSON.stringify(params.reports));
+      localStorage.setItem('lifeos_fitness_target_weight_v1', String(params.targetW));
+    } catch {
+      // ignore
+    }
+
+    if (user) {
+      const compactPayload = JSON.stringify({
+        prs: params.prs.slice(0, 15),
+        tloads: params.tloads.slice(0, 12),
+        recoveries: params.recoveries.slice(0, 12),
+        schedules: params.schedules.slice(0, 14),
+        reports: params.reports.slice(0, 3),
+        targetW: params.targetW,
+        updatedAt: new Date().toISOString(),
+      }).slice(0, 3950);
+
+      const existingFitLog = aiLogs.find((l) => l.toolName === 'fitness_intelligence_store');
+      if (existingFitLog) {
+        try {
+          await updateDoc(doc(db, 'ai_action_logs', existingFitLog.id), {
+            summary: sanitizeString(params.summaryNote, 1500, 'Updated Fitness Intelligence Store'),
+            payloadJson: compactPayload,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // ignore
+        }
+      } else {
+        await logAiAction({
+          actionTitle: 'Fitness Intelligence Store',
+          toolName: 'fitness_intelligence_store',
+          permissionLevel: 'routine_write',
+          status: 'executed',
+          targetModule: 'health',
+          summary: sanitizeString(params.summaryNote, 1500, 'Initialized Fitness Intelligence Store'),
+          payloadJson: compactPayload,
+        });
+      }
+    }
+  };
+
+  const dismissPrCelebrationBanner = () => setPrCelebrationBanner(null);
+
+  const setTargetWeightKg = async (kg: number) => {
+    const clean = Math.max(30, Math.min(250, Math.round(kg * 10) / 10));
+    setTargetWeightKgState(clean);
+    await persistFitnessIntelStore({
+      prs: personalRecords,
+      tloads: trainingLoadLogs,
+      recoveries: recoveryLogs,
+      schedules: workoutSchedules,
+      reports: weeklyFitnessReports,
+      targetW: clean,
+      summaryNote: `Updated target body weight to ${clean} kg`,
+    });
+  };
+
+  const logWorkoutWithExercises = async (data: {
+    title: string;
+    date: string;
+    durationMinutes: number;
+    rpe: number;
+    exercises: WorkoutExerciseEntry[];
+    notes?: string;
+    scheduleIdToComplete?: string;
+  }) => {
+    const ownerId = user?.uid || 'local_user';
+    const workoutId = `wk_${Date.now()}`;
+    const totalVol = data.exercises.reduce(
+      (acc, ex) => acc + (ex.sets || 1) * (ex.reps || 1) * (ex.weightKg || 0),
+      0
+    );
+    const exercisesSummary = data.exercises
+      .map((ex) => `${ex.exerciseName}: ${ex.sets}x${ex.reps} @ ${ex.weightKg}kg`)
+      .join(', ');
+
+    if (user) {
+      const payload: Record<string, unknown> = {
+        ownerId: user.uid,
+        logType: 'workout',
+        date: sanitizeString(data.date, 16, todayDate),
+        title: sanitizeString(data.title, 200, 'Workout Session'),
+        durationMinutes: Math.max(1, Math.round(data.durationMinutes || 45)),
+        volumeKg: Math.round(totalVol),
+        rpe: Math.max(1, Math.min(10, Math.round(data.rpe || 8))),
+        exercisesSummary: sanitizeString(exercisesSummary, 1500),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (data.notes) payload.notes = sanitizeString(data.notes, 1000);
+      await addDoc(collection(db, 'health_logs'), payload);
+      await awardXpAndCoins(40, 15);
+    }
+
+    const loadEntry = buildTrainingLoadLog({
+      workoutId,
+      workoutTitle: data.title,
+      date: data.date || todayDate,
+      durationMinutes: data.durationMinutes || 45,
+      rpe: data.rpe || 8,
+      exercises: data.exercises,
+      fallbackVolumeKg: totalVol,
+      ownerId,
+    });
+
+    const prResult = evaluateAndUpdatePersonalRecords({
+      existingPRs: personalRecords,
+      workoutId,
+      workoutDate: data.date || todayDate,
+      exercises: data.exercises,
+      ownerId,
+    });
+
+    const nextLoadLogs = [loadEntry, ...trainingLoadLogs];
+    let nextSchedules = [...workoutSchedules];
+    if (data.scheduleIdToComplete) {
+      nextSchedules = nextSchedules.map((s) =>
+        s.id === data.scheduleIdToComplete
+          ? {
+              ...s,
+              status: 'completed' as const,
+              completedWorkoutLogId: workoutId,
+              completedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }
+          : s
+      );
+    }
+
+    setTrainingLoadLogs(nextLoadLogs);
+    setPersonalRecords(prResult.updatedPRs);
+    setWorkoutSchedules(nextSchedules);
+    if (prResult.celebrationMessages.length > 0) {
+      setPrCelebrationBanner(prResult.celebrationMessages);
+    }
+
+    await persistFitnessIntelStore({
+      prs: prResult.updatedPRs,
+      tloads: nextLoadLogs,
+      recoveries: recoveryLogs,
+      schedules: nextSchedules,
+      reports: weeklyFitnessReports,
+      targetW: targetWeightKg,
+      summaryNote: `Completed workout "${data.title}" (${loadEntry.rawVolumeKg}kg volume, ${prResult.newlyBrokenPRs.length} new PRs)`,
+    });
+
+    return {
+      newlyBrokenPRs: prResult.newlyBrokenPRs,
+      celebrationMessages: prResult.celebrationMessages,
+    };
+  };
+
+  const logRecoveryCheckIn = async (
+    data: Omit<RecoveryLog, 'id' | 'ownerId' | 'createdAt'>
+  ) => {
+    const newRec: RecoveryLog = {
+      ...data,
+      id: `rec_${Date.now()}`,
+      ownerId: user?.uid || 'local_user',
+      createdAt: new Date().toISOString(),
+    };
+    const next = [newRec, ...recoveryLogs.filter((r) => r.date !== data.date)];
+    setRecoveryLogs(next);
+    await persistFitnessIntelStore({
+      prs: personalRecords,
+      tloads: trainingLoadLogs,
+      recoveries: next,
+      schedules: workoutSchedules,
+      reports: weeklyFitnessReports,
+      targetW: targetWeightKg,
+      summaryNote: `Logged recovery check-in on ${data.date} (Score: ${data.generalRecoveryScore}/100)`,
+    });
+    if (user) {
+      await awardXpAndCoins(15, 5);
+    }
+  };
+
+  const deleteRecoveryLog = async (id: string) => {
+    const next = recoveryLogs.filter((r) => r.id !== id);
+    setRecoveryLogs(next);
+    await persistFitnessIntelStore({
+      prs: personalRecords,
+      tloads: trainingLoadLogs,
+      recoveries: next,
+      schedules: workoutSchedules,
+      reports: weeklyFitnessReports,
+      targetW: targetWeightKg,
+      summaryNote: `Deleted recovery log ${id}`,
+    });
+  };
+
+  const scheduleWorkoutSession = async (
+    data: Omit<WorkoutSchedule, 'id' | 'ownerId' | 'updatedAt'>,
+    syncToLifeOSCalendar = true
+  ) => {
+    const schedId = `wsched_${Date.now()}`;
+    const newSched: WorkoutSchedule = {
+      ...data,
+      id: schedId,
+      ownerId: user?.uid || 'local_user',
+      status: data.status || 'planned', // Never mark completed merely because scheduled!
+      updatedAt: new Date().toISOString(),
+    };
+    const next = [...workoutSchedules, newSched].sort((a, b) =>
+      `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`)
+    );
+    setWorkoutSchedules(next);
+
+    if (syncToLifeOSCalendar && data.status !== 'rest_day' && user) {
+      await createCalendarEvent({
+        title: `Workout: ${data.templateName}`,
+        eventType: 'workout',
+        date: data.date,
+        startTime: data.startTime,
+        endTime: data.endTime,
+        location: 'Gym / Training Area',
+        isProtectedAnchor: false,
+        linkedRecordId: schedId,
+      });
+    }
+
+    await persistFitnessIntelStore({
+      prs: personalRecords,
+      tloads: trainingLoadLogs,
+      recoveries: recoveryLogs,
+      schedules: next,
+      reports: weeklyFitnessReports,
+      targetW: targetWeightKg,
+      summaryNote: `Scheduled workout "${data.templateName}" on ${data.date} (${data.startTime}–${data.endTime})`,
+    });
+  };
+
+  const updateWorkoutScheduleStatus = async (
+    scheduleId: string,
+    status: WorkoutSchedule['status'],
+    rescheduleTo?: { date: string; startTime: string; endTime: string }
+  ) => {
+    const target = workoutSchedules.find((s) => s.id === scheduleId);
+    if (!target) return;
+
+    // If marking completed from the calendar, verify by logging the completed workout & evaluating PRs
+    if (status === 'completed' && target.status !== 'completed') {
+      await logWorkoutWithExercises({
+        title: target.templateName,
+        date: rescheduleTo?.date || target.date,
+        durationMinutes: target.plannedDurationMinutes || 60,
+        rpe: 8,
+        exercises: target.plannedExercises || [],
+        scheduleIdToComplete: scheduleId,
+      });
+      return;
+    }
+
+    const next = workoutSchedules.map((s) =>
+      s.id === scheduleId
+        ? {
+            ...s,
+            status,
+            date: rescheduleTo?.date || s.date,
+            startTime: rescheduleTo?.startTime || s.startTime,
+            endTime: rescheduleTo?.endTime || s.endTime,
+            updatedAt: new Date().toISOString(),
+          }
+        : s
+    );
+    setWorkoutSchedules(next);
+    await persistFitnessIntelStore({
+      prs: personalRecords,
+      tloads: trainingLoadLogs,
+      recoveries: recoveryLogs,
+      schedules: next,
+      reports: weeklyFitnessReports,
+      targetW: targetWeightKg,
+      summaryNote: `Updated workout schedule "${target.templateName}" to ${status}`,
+    });
+  };
+
+  const deleteWorkoutSchedule = async (scheduleId: string) => {
+    const next = workoutSchedules.filter((s) => s.id !== scheduleId);
+    setWorkoutSchedules(next);
+    await persistFitnessIntelStore({
+      prs: personalRecords,
+      tloads: trainingLoadLogs,
+      recoveries: recoveryLogs,
+      schedules: next,
+      reports: weeklyFitnessReports,
+      targetW: targetWeightKg,
+      summaryNote: `Deleted workout schedule ${scheduleId}`,
+    });
+  };
+
+  const deletePersonalRecord = async (prId: string) => {
+    const next = personalRecords.filter((p) => p.id !== prId);
+    setPersonalRecords(next);
+    await persistFitnessIntelStore({
+      prs: next,
+      tloads: trainingLoadLogs,
+      recoveries: recoveryLogs,
+      schedules: workoutSchedules,
+      reports: weeklyFitnessReports,
+      targetW: targetWeightKg,
+      summaryNote: `Deleted personal record ${prId}`,
+    });
+  };
+
+  const generateAndSaveWeeklyFitnessReport = async (): Promise<WeeklyFitnessReport> => {
+    const measurements = healthLogs
+      .filter((h) => h.logType === 'measurement')
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const workouts = healthLogs
+      .filter((h) => h.logType === 'workout')
+      .sort((a, b) => b.date.localeCompare(a.date));
+    const meals = healthLogs
+      .filter((h) => h.logType === 'meal')
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    const report = generateWeeklyFitnessCoachReport({
+      ownerId: user?.uid || 'local_user',
+      todayDate,
+      measurements,
+      workouts,
+      meals,
+      personalRecords,
+      trainingLoadLogs,
+      recoveryLogs,
+      workoutSchedules,
+      targetWeightKg,
+      baseCalorieTarget: profile?.calorieTarget || 2350,
+      baseProteinTarget: profile?.proteinTargetGrams || 165,
+    });
+
+    const nextReports = [
+      report,
+      ...weeklyFitnessReports.filter((r) => r.weekEndDate !== report.weekEndDate),
+    ];
+    setWeeklyFitnessReports(nextReports);
+    await persistFitnessIntelStore({
+      prs: personalRecords,
+      tloads: trainingLoadLogs,
+      recoveries: recoveryLogs,
+      schedules: workoutSchedules,
+      reports: nextReports,
+      targetW: targetWeightKg,
+      summaryNote: `Generated Weekly AI Fitness & Nutrition Report (${report.weekStartDate} to ${report.weekEndDate})`,
+    });
+    return report;
+  };
 
   // Hydrate persistentMemory from Firestore ai_action_logs if a newer remote memory snapshot exists
   useEffect(() => {
@@ -2004,8 +2858,14 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         payloadJson: JSON.stringify(newSession),
       });
 
-      // Credit XP and Coins
-      await awardXpAndCoins(cleanMins, Math.max(5, Math.round(cleanMins / 2)));
+      // Credit XP and Coins (verified focus session with unique activityKey)
+      if (cleanMins >= 1) {
+        await awardXpAndCoins(cleanMins * 2, Math.max(8, Math.round(cleanMins * 0.6)), {
+          activityKey: `pomo_${newSession.id}`,
+          reason: `Completed ${cleanMins}m ${snapState.category} Pomodoro`,
+          sourceModule: 'pomodoro',
+        });
+      }
 
       // Update linked Task actualMinutes if present
       if (linkedTask) {
@@ -2280,6 +3140,371 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  // --- PIXEL-ART RPG GAMIFICATION COMPUTED VALUES & ACTIONS ---
+  const rpgLevelInfo = React.useMemo(
+    () => calculateLevelProgress(profile?.xp ?? 0),
+    [profile?.xp]
+  );
+
+  const rpgRankEval = React.useMemo(() => {
+    const completedTasksCount = tasks.filter((t) => t.status === 'completed').length;
+    const totalPomodoroMinutes = pomodoroSessions
+      .filter((s) => s.mode === 'focus')
+      .reduce((acc, s) => acc + s.durationMinutes, 0);
+    const studiedItemsCount =
+      studyItems.filter((s) => s.status === 'studied' || s.status === 'mastered').length +
+      studyModules.reduce((acc, m) => acc + (m.completedLectures || 0), 0);
+    const workoutsCount = healthLogs.filter((h) => h.logType === 'workout').length;
+
+    return evaluateUserRank({
+      xp: profile?.xp ?? 0,
+      completedTasksCount,
+      totalPomodoroMinutes,
+      streakDays: profile?.streakDays ?? 0,
+      studiedItemsCount,
+      workoutsCount,
+    });
+  }, [profile?.xp, profile?.streakDays, tasks, pomodoroSessions, studyItems, studyModules, healthLogs]);
+
+  const rpgMissions = React.useMemo(
+    () =>
+      computeLiveMissions({
+        todayDate,
+        tasks,
+        pomodoroSessions,
+        studyModules,
+        studyItems,
+        healthLogs,
+        goalsHabits,
+        personalRecords,
+        profile,
+        customMissions: rpgState.customMissions,
+        claimedMissionKeys: rpgState.claimedMissionKeys,
+      }),
+    [
+      todayDate,
+      tasks,
+      pomodoroSessions,
+      studyModules,
+      studyItems,
+      healthLogs,
+      goalsHabits,
+      personalRecords,
+      profile,
+      rpgState.customMissions,
+      rpgState.claimedMissionKeys,
+    ]
+  );
+
+  const rpgAchievements = React.useMemo(
+    () =>
+      computeLiveAchievements({
+        tasks,
+        pomodoroSessions,
+        studyModules,
+        studyItems,
+        healthLogs,
+        goalsHabits,
+        personalRecords,
+        profile,
+        claimedAchievementIds: rpgState.claimedAchievementIds,
+      }),
+    [
+      tasks,
+      pomodoroSessions,
+      studyModules,
+      studyItems,
+      healthLogs,
+      goalsHabits,
+      personalRecords,
+      profile,
+      rpgState.claimedAchievementIds,
+    ]
+  );
+
+  const openRpgWorld = (
+    tab: 'study_room' | 'missions' | 'shop' | 'inventory' | 'achievements' = 'study_room'
+  ) => {
+    setRpgWorldInitialTab(tab);
+    setIsRpgWorldOpen(true);
+  };
+
+  const closeRpgWorld = () => setIsRpgWorldOpen(false);
+  const dismissLevelUpBanner = () => setLevelUpBanner(null);
+
+  const claimRpgMissionReward = async (missionId: string): Promise<boolean> => {
+    const mission = rpgMissions.find((m) => m.id === missionId);
+    if (!mission || mission.claimed || mission.currentValue < mission.targetValue) {
+      return false;
+    }
+    const activityKey = `mission_claim_${mission.id}`;
+    if (rpgState.rewardedActivityIds.includes(activityKey)) {
+      return false;
+    }
+
+    const nextRpg: RpgGamificationState = {
+      ...rpgState,
+      claimedMissionKeys: Array.from(new Set([...rpgState.claimedMissionKeys, mission.id])),
+    };
+    setRpgState(nextRpg);
+    await awardXpAndCoins(mission.xpReward, mission.coinReward, {
+      activityKey,
+      reason: `Claimed Mission: ${mission.title}`,
+      sourceModule: 'mission',
+    });
+    await persistRpgState(
+      {
+        ...nextRpg,
+        rewardedActivityIds: Array.from(
+          new Set([...nextRpg.rewardedActivityIds, activityKey])
+        ),
+      },
+      `Claimed mission reward: ${mission.title}`
+    );
+    return true;
+  };
+
+  const claimRpgAchievementReward = async (achievementId: string): Promise<boolean> => {
+    const ach = rpgAchievements.find((a) => a.id === achievementId);
+    if (!ach || !ach.unlocked || ach.claimed) {
+      return false;
+    }
+    const activityKey = `achievement_claim_${ach.id}`;
+    if (rpgState.rewardedActivityIds.includes(activityKey)) {
+      return false;
+    }
+
+    const nextRpg: RpgGamificationState = {
+      ...rpgState,
+      claimedAchievementIds: Array.from(
+        new Set([...rpgState.claimedAchievementIds, ach.id])
+      ),
+    };
+    setRpgState(nextRpg);
+    await awardXpAndCoins(ach.xpReward, ach.coinReward, {
+      activityKey,
+      reason: `Unlocked Achievement: ${ach.title}`,
+      sourceModule: 'achievement',
+    });
+    await persistRpgState(
+      {
+        ...nextRpg,
+        rewardedActivityIds: Array.from(
+          new Set([...nextRpg.rewardedActivityIds, activityKey])
+        ),
+      },
+      `Claimed achievement reward: ${ach.title}`
+    );
+    return true;
+  };
+
+  const purchaseRpgShopItem = async (
+    itemId: string
+  ): Promise<{ ok: boolean; message: string }> => {
+    const item = RPG_SHOP_ITEMS.find((i) => i.id === itemId);
+    if (!item) {
+      return { ok: false, message: 'Item not found in shop catalog.' };
+    }
+    if (rpgState.ownedItemIds.includes(itemId)) {
+      return { ok: false, message: 'You already own this item in your inventory!' };
+    }
+    const currentCoins = profile?.coins ?? 0;
+    if (currentCoins < item.price) {
+      return {
+        ok: false,
+        message: `Insufficient Life Coins! You need ${item.price - currentCoins} more coins.`,
+      };
+    }
+
+    const nextCoins = Math.max(0, currentCoins - item.price);
+    if (profile) {
+      setProfile({ ...profile, coins: nextCoins });
+    }
+    if (user && profile) {
+      await updateProfileSettings({ coins: nextCoins });
+    }
+
+    // Automatically equip the newly purchased item in its slot
+    const nextPlaced = [
+      ...rpgState.placedItems.filter((p) => p.slot !== item.slot),
+      { itemId: item.id, slot: item.slot, offsetX: 0, offsetY: 0 },
+    ];
+
+    const tx: RpgCoinTransaction = {
+      id: `tx_shop_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      type: 'spend',
+      amount: -item.price,
+      xpDelta: 0,
+      reason: `Purchased & Equipped: ${item.name}`,
+      sourceModule: 'shop',
+      activityKey: `buy_${item.id}`,
+    };
+
+    const nextRpg: RpgGamificationState = {
+      ...rpgState,
+      ownedItemIds: Array.from(new Set([...rpgState.ownedItemIds, item.id])),
+      placedItems: nextPlaced,
+      transactions: [tx, ...rpgState.transactions].slice(0, 60),
+    };
+
+    await persistRpgState(nextRpg, `Purchased ${item.name} for ${item.price} coins`);
+    return {
+      ok: true,
+      message: `Purchased ${item.name} and placed it in your Study Room!`,
+    };
+  };
+
+  const equipRpgItem = async (itemId: string) => {
+    const item = RPG_SHOP_ITEMS.find((i) => i.id === itemId);
+    if (!item || !rpgState.ownedItemIds.includes(itemId)) return;
+
+    const nextPlaced = [
+      ...rpgState.placedItems.filter((p) => p.slot !== item.slot),
+      { itemId: item.id, slot: item.slot, offsetX: 0, offsetY: 0 },
+    ];
+    await persistRpgState(
+      { ...rpgState, placedItems: nextPlaced },
+      `Equipped ${item.name} in ${item.slot}`
+    );
+  };
+
+  const unequipRpgSlot = async (slot: RpgRoomSlot) => {
+    const nextPlaced = rpgState.placedItems.filter((p) => p.slot !== slot);
+    await persistRpgState(
+      { ...rpgState, placedItems: nextPlaced },
+      `Stored item from slot ${slot}`
+    );
+  };
+
+  const moveRpgPlacedItem = async (slot: RpgRoomSlot, dx: number, dy: number) => {
+    const nextPlaced = rpgState.placedItems.map((p) =>
+      p.slot === slot
+        ? {
+            ...p,
+            offsetX: Math.max(-35, Math.min(35, p.offsetX + dx)),
+            offsetY: Math.max(-20, Math.min(20, p.offsetY + dy)),
+          }
+        : p
+    );
+    await persistRpgState({ ...rpgState, placedItems: nextPlaced }, `Moved ${slot}`);
+  };
+
+  const resetRpgPlacedItemPosition = async (slot: RpgRoomSlot) => {
+    const nextPlaced = rpgState.placedItems.map((p) =>
+      p.slot === slot ? { ...p, offsetX: 0, offsetY: 0 } : p
+    );
+    await persistRpgState({ ...rpgState, placedItems: nextPlaced }, `Reset ${slot} position`);
+  };
+
+  const setRpgEnvironment = async (env: StudyEnvironmentMode) => {
+    await persistRpgState(
+      { ...rpgState, activeEnvironment: env },
+      `Switched Study Room environment to ${env}`
+    );
+  };
+
+  const setRpgAmbientSound = async (sound: AmbientSoundType, volume?: number) => {
+    await persistRpgState(
+      {
+        ...rpgState,
+        activeAmbientSound: sound,
+        ambientVolume: volume !== undefined ? volume : rpgState.ambientVolume,
+      },
+      `Updated ambient sound to ${sound}`
+    );
+  };
+
+  const updateRpgAvatar = async (partial: Partial<RpgAvatarConfig>) => {
+    const nextAvatar = { ...rpgState.avatar, ...partial };
+    await persistRpgState({ ...rpgState, avatar: nextAvatar }, 'Updated Pixel Avatar');
+  };
+
+  const saveRpgRoomPreset = async (name: string) => {
+    const cleanName = sanitizeString(name, 40, 'Custom Room Setup');
+    const newPreset = {
+      id: `preset_${Date.now()}`,
+      name: cleanName,
+      createdAt: new Date().toISOString(),
+      environment: rpgState.activeEnvironment,
+      placedItems: [...rpgState.placedItems],
+    };
+    const nextPresets = [newPreset, ...rpgState.savedRoomPresets].slice(0, 8);
+    await persistRpgState(
+      { ...rpgState, savedRoomPresets: nextPresets },
+      `Saved room preset "${cleanName}"`
+    );
+  };
+
+  const loadRpgRoomPreset = async (presetId: string) => {
+    const found = rpgState.savedRoomPresets.find((p) => p.id === presetId);
+    if (!found) return;
+    await persistRpgState(
+      {
+        ...rpgState,
+        activeEnvironment: found.environment,
+        placedItems: [...found.placedItems],
+      },
+      `Loaded room preset "${found.name}"`
+    );
+  };
+
+  const deleteRpgRoomPreset = async (presetId: string) => {
+    const nextPresets = rpgState.savedRoomPresets.filter((p) => p.id !== presetId);
+    await persistRpgState(
+      { ...rpgState, savedRoomPresets: nextPresets },
+      'Deleted room preset'
+    );
+  };
+
+  const generateAiPersonalizedMissions = async (): Promise<RpgMission[]> => {
+    const openTasksList = tasks.filter((t) => t.status !== 'completed');
+    const dueRevs = studyItems.filter(
+      (s) => s.status === 'review_due' || s.nextReviewDate <= todayDate
+    );
+    const upcomingExam =
+      studyModules
+        .filter((m) => m.examDate && m.examDate >= todayDate)
+        .sort((a, b) => a.examDate.localeCompare(b.examDate))[0] || null;
+
+    try {
+      const res = await fetch('/api/ai/rpg-missions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contextSnapshot: {
+            todayDate,
+            openTasksCount: openTasksList.length,
+            sampleTasks: openTasksList.slice(0, 4).map((t) => t.title),
+            dueRevisionsCount: dueRevs.length,
+            upcomingExam: upcomingExam
+              ? {
+                  code: upcomingExam.code,
+                  title: upcomingExam.title,
+                  examDate: upcomingExam.examDate,
+                }
+              : null,
+            energyLevel: persistentMemory.userProfile?.afternoonEnergy || 'medium',
+            streakDays: profile?.streakDays ?? 0,
+          },
+        }),
+      });
+      const data = await res.json();
+      const generated: RpgMission[] = Array.isArray(data.missions) ? data.missions : [];
+      if (generated.length > 0) {
+        const nextCustom = [...generated, ...rpgState.customMissions].slice(0, 6);
+        await persistRpgState(
+          { ...rpgState, customMissions: nextCustom },
+          `Generated ${generated.length} AI Personalized RPG Missions`
+        );
+        return generated;
+      }
+    } catch {
+      // ignore network error
+    }
+    return [];
+  };
+
   return (
     <LifeOSContext.Provider
       value={{
@@ -2363,6 +3588,48 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         confirmLearnedRule,
         deleteLearnedRule,
         resetPersistentMemory,
+        personalRecords,
+        trainingLoadLogs,
+        recoveryLogs,
+        workoutSchedules,
+        weeklyFitnessReports,
+        targetWeightKg,
+        prCelebrationBanner,
+        dismissPrCelebrationBanner,
+        setTargetWeightKg,
+        logWorkoutWithExercises,
+        logRecoveryCheckIn,
+        deleteRecoveryLog,
+        scheduleWorkoutSession,
+        updateWorkoutScheduleStatus,
+        deleteWorkoutSchedule,
+        generateAndSaveWeeklyFitnessReport,
+        deletePersonalRecord,
+        rpgState,
+        rpgMissions,
+        rpgAchievements,
+        rpgRankEval,
+        rpgLevelInfo,
+        isRpgWorldOpen,
+        rpgWorldInitialTab,
+        openRpgWorld,
+        closeRpgWorld,
+        levelUpBanner,
+        dismissLevelUpBanner,
+        claimRpgMissionReward,
+        claimRpgAchievementReward,
+        purchaseRpgShopItem,
+        equipRpgItem,
+        unequipRpgSlot,
+        moveRpgPlacedItem,
+        resetRpgPlacedItemPosition,
+        setRpgEnvironment,
+        setRpgAmbientSound,
+        updateRpgAvatar,
+        saveRpgRoomPreset,
+        loadRpgRoomPreset,
+        deleteRpgRoomPreset,
+        generateAiPersonalizedMissions,
       }}
     >
       {children}
