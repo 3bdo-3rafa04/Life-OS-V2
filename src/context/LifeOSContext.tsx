@@ -184,6 +184,7 @@ interface LifeOSContextValue {
   ) => Promise<void>;
   deleteAiLog: (logId: string) => Promise<void>;
   saveDailyReview: (data: Omit<DailyReviewRecord, 'id' | 'ownerId'>) => Promise<void>;
+  importWorkspaceBackup: (backup: Record<string, unknown>) => Promise<void>;
   clearAllWorkspaceData: () => Promise<void>;
   // Background Pomodoro & Study Time Engine
   startPomodoro: () => void;
@@ -332,20 +333,99 @@ const LEGACY_SAMPLE_TITLES = new Set([
   'Lens & cataract — revision + recall',
 ]);
 
+const PERSONAL_OWNER_ID = 'personal_owner';
+
+const LS_DATA_KEYS = {
+  profile: 'lifeos_data_v1_profile',
+  tasks: 'lifeos_data_v1_tasks',
+  events: 'lifeos_data_v1_events',
+  studyModules: 'lifeos_data_v1_study_modules',
+  studyItems: 'lifeos_data_v1_study_items',
+  healthLogs: 'lifeos_data_v1_health_logs',
+  financeRecords: 'lifeos_data_v1_finance_records',
+  knowledgeItems: 'lifeos_data_v1_knowledge_items',
+  goalsHabits: 'lifeos_data_v1_goals_habits',
+  aiLogs: 'lifeos_data_v1_ai_logs',
+  dailyReviews: 'lifeos_data_v1_daily_reviews',
+} as const;
+
+const createDefaultPersonalProfile = (): UserProfile => ({
+  uid: PERSONAL_OWNER_ID,
+  displayName: 'Personal Workspace',
+  currency: 'EGP',
+  timezone: 'Africa/Cairo',
+  city: 'Cairo',
+  prayerMethod: 'Egypt',
+  prayerBufferMinutes: 15,
+  xp: 0,
+  level: 1,
+  coins: 0,
+  streakDays: 0,
+  calorieTarget: 2350,
+  proteinTargetGrams: 165,
+  waterTargetMl: 3000,
+  waterLoggedTodayMl: 0,
+  aiRoutineAutoApprove: true,
+});
+
+function loadLocalStore<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveLocalStore<T>(key: string, value: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function makeLocalId(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
 export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [events, setEvents] = useState<CalendarEventItem[]>([]);
-  const [studyModules, setStudyModules] = useState<StudyModuleItem[]>([]);
-  const [studyItems, setStudyItems] = useState<StudyItemRecord[]>([]);
-  const [healthLogs, setHealthLogs] = useState<HealthLogRecord[]>([]);
-  const [financeRecords, setFinanceRecords] = useState<FinanceRecordItem[]>([]);
-  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItemRecord[]>([]);
-  const [goalsHabits, setGoalsHabits] = useState<GoalHabitRecord[]>([]);
-  const [aiLogs, setAiLogs] = useState<AiActionLogRecord[]>([]);
-  const [dailyReviews, setDailyReviews] = useState<DailyReviewRecord[]>([]);
+  const [authReady, setAuthReady] = useState(true);
+  const [profile, setProfile] = useState<UserProfile | null>(() =>
+    loadLocalStore<UserProfile>(LS_DATA_KEYS.profile, createDefaultPersonalProfile())
+  );
+  const [tasks, setTasks] = useState<TaskItem[]>(() =>
+    loadLocalStore<TaskItem[]>(LS_DATA_KEYS.tasks, [])
+  );
+  const [events, setEvents] = useState<CalendarEventItem[]>(() =>
+    loadLocalStore<CalendarEventItem[]>(LS_DATA_KEYS.events, [])
+  );
+  const [studyModules, setStudyModules] = useState<StudyModuleItem[]>(() =>
+    loadLocalStore<StudyModuleItem[]>(LS_DATA_KEYS.studyModules, [])
+  );
+  const [studyItems, setStudyItems] = useState<StudyItemRecord[]>(() =>
+    loadLocalStore<StudyItemRecord[]>(LS_DATA_KEYS.studyItems, [])
+  );
+  const [healthLogs, setHealthLogs] = useState<HealthLogRecord[]>(() =>
+    loadLocalStore<HealthLogRecord[]>(LS_DATA_KEYS.healthLogs, [])
+  );
+  const [financeRecords, setFinanceRecords] = useState<FinanceRecordItem[]>(() =>
+    loadLocalStore<FinanceRecordItem[]>(LS_DATA_KEYS.financeRecords, [])
+  );
+  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItemRecord[]>(() =>
+    loadLocalStore<KnowledgeItemRecord[]>(LS_DATA_KEYS.knowledgeItems, [])
+  );
+  const [goalsHabits, setGoalsHabits] = useState<GoalHabitRecord[]>(() =>
+    loadLocalStore<GoalHabitRecord[]>(LS_DATA_KEYS.goalsHabits, [])
+  );
+  const [aiLogs, setAiLogs] = useState<AiActionLogRecord[]>(() =>
+    loadLocalStore<AiActionLogRecord[]>(LS_DATA_KEYS.aiLogs, [])
+  );
+  const [dailyReviews, setDailyReviews] = useState<DailyReviewRecord[]>(() =>
+    loadLocalStore<DailyReviewRecord[]>(LS_DATA_KEYS.dailyReviews, [])
+  );
   const [localPomodoroSessions, setLocalPomodoroSessions] = useState<PomodoroSessionRecord[]>(() => {
     try {
       const raw = localStorage.getItem('lifeos_pomodoro_sessions_v1');
@@ -542,6 +622,21 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
   }, [profile?.timezone]);
 
+  // Automatically persist all personal workspace collections to localStorage
+  useEffect(() => {
+    if (profile) saveLocalStore(LS_DATA_KEYS.profile, profile);
+  }, [profile]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.tasks, tasks), [tasks]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.events, events), [events]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.studyModules, studyModules), [studyModules]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.studyItems, studyItems), [studyItems]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.healthLogs, healthLogs), [healthLogs]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.financeRecords, financeRecords), [financeRecords]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.knowledgeItems, knowledgeItems), [knowledgeItems]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.goalsHabits, goalsHabits), [goalsHabits]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.aiLogs, aiLogs), [aiLogs]);
+  useEffect(() => saveLocalStore(LS_DATA_KEYS.dailyReviews, dailyReviews), [dailyReviews]);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (currUser) => {
       setUser(currUser);
@@ -577,17 +672,9 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           handleFirestoreError(err, OperationType.GET, `users/${currUser.uid}`);
         }
       } else {
-        setProfile(null);
-        setTasks([]);
-        setEvents([]);
-        setStudyModules([]);
-        setStudyItems([]);
-        setHealthLogs([]);
-        setFinanceRecords([]);
-        setKnowledgeItems([]);
-        setGoalsHabits([]);
-        setAiLogs([]);
-        setDailyReviews([]);
+        setProfile((prev) =>
+          prev || loadLocalStore<UserProfile>(LS_DATA_KEYS.profile, createDefaultPersonalProfile())
+        );
       }
     });
     return () => unsub();
@@ -727,7 +814,12 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const updateProfileSettings = async (partial: Partial<UserProfile>) => {
-    if (!user || !profile) return;
+    const current = profile || createDefaultPersonalProfile();
+    const updated: UserProfile = { ...current, ...partial };
+    setProfile(updated);
+    saveLocalStore(LS_DATA_KEYS.profile, updated);
+
+    if (!user) return;
     const path = `users/${user.uid}`;
     try {
       await updateDoc(doc(db, 'users', user.uid), {
@@ -872,16 +964,39 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const createTask = async (data: Omit<TaskItem, 'id' | 'ownerId'>) => {
-    if (!user) return;
-    try {
-      const payload: Record<string, unknown> = {
-        ownerId: user.uid,
-        title: sanitizeString(data.title, 200, 'Untitled Task'),
+    const cleanTitle = sanitizeString(data.title, 200, 'Untitled Task');
+    const cleanDue = sanitizeString(data.dueDate, 32, todayDate);
+    const cleanEst = Math.max(1, Math.min(1440, Math.round(data.estimatedMinutes || 30)));
+    if (!user) {
+      const item: TaskItem = {
+        id: makeLocalId('task'),
+        ownerId: PERSONAL_OWNER_ID,
+        title: cleanTitle,
         priority: data.priority,
         status: data.status || 'todo',
         category: data.category || 'personal',
-        estimatedMinutes: Math.max(1, Math.min(1440, Math.round(data.estimatedMinutes || 30))),
-        dueDate: sanitizeString(data.dueDate, 32, todayDate),
+        estimatedMinutes: cleanEst,
+        dueDate: cleanDue,
+        ...(data.notes ? { notes: sanitizeString(data.notes, 2000) } : {}),
+        ...(data.statusReason ? { statusReason: sanitizeString(data.statusReason, 300) } : {}),
+        ...(data.scheduledStart ? { scheduledStart: sanitizeString(data.scheduledStart, 32) } : {}),
+        ...(data.linkedGoalId ? { linkedGoalId: sanitizeString(data.linkedGoalId, 128) } : {}),
+        ...(data.linkedModuleId ? { linkedModuleId: sanitizeString(data.linkedModuleId, 128) } : {}),
+        ...(typeof data.isRecurring === 'boolean' ? { isRecurring: data.isRecurring } : {}),
+        ...(data.recurrenceRule ? { recurrenceRule: sanitizeString(data.recurrenceRule, 64) } : {}),
+      };
+      setTasks((prev) => [item, ...prev]);
+      return;
+    }
+    try {
+      const payload: Record<string, unknown> = {
+        ownerId: user.uid,
+        title: cleanTitle,
+        priority: data.priority,
+        status: data.status || 'todo',
+        category: data.category || 'personal',
+        estimatedMinutes: cleanEst,
+        dueDate: cleanDue,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -903,55 +1018,50 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     task: TaskItem,
     partial: Partial<Omit<TaskItem, 'id' | 'ownerId'>>
   ) => {
-    if (!user) return;
-    try {
-      const updatePayload: Record<string, unknown> = {
-        updatedAt: serverTimestamp(),
-      };
-      if (partial.title !== undefined) {
-        updatePayload.title = sanitizeString(partial.title, 200, task.title);
-      }
-      if (partial.notes !== undefined) {
-        updatePayload.notes = sanitizeString(partial.notes, 2000);
-      }
-      if (partial.priority !== undefined) {
-        updatePayload.priority = partial.priority;
-      }
-      if (partial.status !== undefined) {
-        updatePayload.status = partial.status;
-      }
-      if (partial.statusReason !== undefined) {
-        updatePayload.statusReason = sanitizeString(partial.statusReason, 300);
-      }
-      if (partial.category !== undefined) {
-        updatePayload.category = partial.category;
-      }
-      if (partial.estimatedMinutes !== undefined) {
-        updatePayload.estimatedMinutes = Math.max(
-          1,
-          Math.min(1440, Math.round(partial.estimatedMinutes))
-        );
-      }
-      if (partial.actualMinutes !== undefined) {
-        updatePayload.actualMinutes = Math.max(
-          0,
-          Math.min(1440, Math.round(partial.actualMinutes))
-        );
-      }
-      if (partial.dueDate !== undefined) {
-        updatePayload.dueDate = sanitizeString(partial.dueDate, 32, todayDate);
-      }
-      if (partial.scheduledStart !== undefined) {
-        updatePayload.scheduledStart = sanitizeString(partial.scheduledStart, 32);
-      }
-      if (partial.linkedGoalId !== undefined) {
-        updatePayload.linkedGoalId = sanitizeString(partial.linkedGoalId, 128);
-      }
-      if (partial.linkedModuleId !== undefined) {
-        updatePayload.linkedModuleId = sanitizeString(partial.linkedModuleId, 128);
-      }
+    const cleanPartial: Partial<TaskItem> = {};
+    if (partial.title !== undefined) cleanPartial.title = sanitizeString(partial.title, 200, task.title);
+    if (partial.notes !== undefined) cleanPartial.notes = sanitizeString(partial.notes, 2000);
+    if (partial.priority !== undefined) cleanPartial.priority = partial.priority;
+    if (partial.status !== undefined) cleanPartial.status = partial.status;
+    if (partial.statusReason !== undefined) {
+      cleanPartial.statusReason = sanitizeString(partial.statusReason, 300);
+    }
+    if (partial.category !== undefined) cleanPartial.category = partial.category;
+    if (partial.estimatedMinutes !== undefined) {
+      cleanPartial.estimatedMinutes = Math.max(1, Math.min(1440, Math.round(partial.estimatedMinutes)));
+    }
+    if (partial.actualMinutes !== undefined) {
+      cleanPartial.actualMinutes = Math.max(0, Math.min(1440, Math.round(partial.actualMinutes)));
+    }
+    if (partial.dueDate !== undefined) cleanPartial.dueDate = sanitizeString(partial.dueDate, 32, todayDate);
+    if (partial.scheduledStart !== undefined) {
+      cleanPartial.scheduledStart = sanitizeString(partial.scheduledStart, 32);
+    }
+    if (partial.linkedGoalId !== undefined) {
+      cleanPartial.linkedGoalId = sanitizeString(partial.linkedGoalId, 128);
+    }
+    if (partial.linkedModuleId !== undefined) {
+      cleanPartial.linkedModuleId = sanitizeString(partial.linkedModuleId, 128);
+    }
 
-      await updateDoc(doc(db, 'tasks', task.id), updatePayload);
+    if (!user) {
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, ...cleanPartial } : t)));
+      if (partial.status === 'completed' && task.status !== 'completed') {
+        const xpGain = task.priority === 'critical' ? 40 : task.priority === 'high' ? 30 : 20;
+        await awardXpAndCoins(xpGain, 10, {
+          activityKey: `task_complete_${task.id}`,
+          reason: `Completed Task: ${task.title}`,
+          sourceModule: 'task',
+        });
+      }
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'tasks', task.id), {
+        ...cleanPartial,
+        updatedAt: serverTimestamp(),
+      });
 
       if (partial.status === 'completed' && task.status !== 'completed') {
         const xpGain = task.priority === 'critical' ? 40 : task.priority === 'high' ? 30 : 20;
@@ -975,7 +1085,10 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteTask = async (taskId: string) => {
-    if (!user) return;
+    if (!user) {
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'tasks', taskId));
     } catch (err) {
@@ -984,15 +1097,34 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const createCalendarEvent = async (data: Omit<CalendarEventItem, 'id' | 'ownerId'>) => {
-    if (!user) return;
+    const cleanTitle = sanitizeString(data.title, 200, 'Scheduled Event');
+    const cleanDate = sanitizeString(data.date, 16, todayDate);
+    const cleanStart = sanitizeString(data.startTime, 10, '09:00');
+    const cleanEnd = sanitizeString(data.endTime, 10, '10:00');
+    if (!user) {
+      const ev: CalendarEventItem = {
+        id: makeLocalId('ev'),
+        ownerId: PERSONAL_OWNER_ID,
+        title: cleanTitle,
+        eventType: data.eventType,
+        date: cleanDate,
+        startTime: cleanStart,
+        endTime: cleanEnd,
+        isProtectedAnchor: Boolean(data.isProtectedAnchor),
+        ...(data.location ? { location: sanitizeString(data.location, 200) } : {}),
+        ...(data.linkedRecordId ? { linkedRecordId: sanitizeString(data.linkedRecordId, 128) } : {}),
+      };
+      setEvents((prev) => [...prev, ev]);
+      return;
+    }
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
-        title: sanitizeString(data.title, 200, 'Scheduled Event'),
+        title: cleanTitle,
         eventType: data.eventType,
-        date: sanitizeString(data.date, 16, todayDate),
-        startTime: sanitizeString(data.startTime, 10, '09:00'),
-        endTime: sanitizeString(data.endTime, 10, '10:00'),
+        date: cleanDate,
+        startTime: cleanStart,
+        endTime: cleanEnd,
         isProtectedAnchor: Boolean(data.isProtectedAnchor),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -1006,7 +1138,10 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteCalendarEvent = async (eventId: string) => {
-    if (!user) return;
+    if (!user) {
+      setEvents((prev) => prev.filter((e) => e.id !== eventId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'calendar_events', eventId));
     } catch (err) {
@@ -1017,16 +1152,49 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const createStudyModule = async (
     data: Omit<StudyModuleItem, 'id' | 'ownerId'>
   ): Promise<string> => {
-    if (!user) return '';
+    const cleanCode = sanitizeString(data.code, 32, 'MOD101');
+    const cleanTitle = sanitizeString(data.title, 200, 'Academic Module');
+    const cleanTerm = sanitizeString(data.term, 64, 'Current Term');
+    const cleanExamDate = sanitizeString(data.examDate, 32, todayDate);
+    const cleanTotal = Math.max(0, Math.min(500, Math.round(data.totalLectures || 12)));
+    const cleanCompleted = Math.max(0, Math.min(500, Math.round(data.completedLectures || 0)));
+
+    if (!user) {
+      const newId = makeLocalId('mod');
+      const mod: StudyModuleItem = {
+        id: newId,
+        ownerId: PERSONAL_OWNER_ID,
+        code: cleanCode,
+        title: cleanTitle,
+        term: cleanTerm,
+        examDate: cleanExamDate,
+        totalLectures: cleanTotal,
+        completedLectures: cleanCompleted,
+        ...(data.targetGrade ? { targetGrade: sanitizeString(data.targetGrade, 16) } : {}),
+      };
+      setStudyModules((prev) => [...prev, mod]);
+      await createCalendarEvent({
+        title: `Exam: ${cleanCode} — ${cleanTitle}`,
+        eventType: 'exam',
+        date: cleanExamDate,
+        startTime: '09:00',
+        endTime: '12:00',
+        location: 'Exam Hall',
+        isProtectedAnchor: true,
+        linkedRecordId: newId,
+      });
+      return newId;
+    }
+
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
-        code: sanitizeString(data.code, 32, 'MOD101'),
-        title: sanitizeString(data.title, 200, 'Academic Module'),
-        term: sanitizeString(data.term, 64, 'Current Term'),
-        examDate: sanitizeString(data.examDate, 32, todayDate),
-        totalLectures: Math.max(0, Math.min(500, Math.round(data.totalLectures || 12))),
-        completedLectures: Math.max(0, Math.min(500, Math.round(data.completedLectures || 0))),
+        code: cleanCode,
+        title: cleanTitle,
+        term: cleanTerm,
+        examDate: cleanExamDate,
+        totalLectures: cleanTotal,
+        completedLectures: cleanCompleted,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -1052,7 +1220,10 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteStudyModule = async (moduleId: string) => {
-    if (!user) return;
+    if (!user) {
+      setStudyModules((prev) => prev.filter((m) => m.id !== moduleId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'study_modules', moduleId));
     } catch (err) {
@@ -1061,30 +1232,54 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const createStudyItem = async (data: Omit<StudyItemRecord, 'id' | 'ownerId'>) => {
-    if (!user) return;
-    try {
-      // Ensure parent moduleId exists in study_modules to satisfy Firestore relational rule
-      let validModuleId = data.moduleId;
-      let validModuleCode = data.moduleCode || 'MOD';
+    let validModuleId = data.moduleId;
+    let validModuleCode = data.moduleCode || 'MOD';
 
-      const existsInState = studyModules.some((m) => m.id === validModuleId);
-      if (!existsInState) {
-        if (studyModules.length > 0) {
-          validModuleId = studyModules[0].id;
-          validModuleCode = studyModules[0].code;
-        } else {
-          const createdId = await createStudyModule({
-            code: sanitizeString(data.moduleCode, 32, 'GEN101'),
-            title: sanitizeString(data.moduleCode || 'General Study Module', 200),
-            term: 'Current Term',
-            examDate: todayDate,
-            totalLectures: 10,
-            completedLectures: 0,
-          });
-          validModuleId = createdId;
-        }
+    const existsInState = studyModules.some((m) => m.id === validModuleId);
+    if (!existsInState) {
+      if (studyModules.length > 0) {
+        validModuleId = studyModules[0].id;
+        validModuleCode = studyModules[0].code;
+      } else {
+        const createdId = await createStudyModule({
+          code: sanitizeString(data.moduleCode, 32, 'GEN101'),
+          title: sanitizeString(data.moduleCode || 'General Study Module', 200),
+          term: 'Current Term',
+          examDate: todayDate,
+          totalLectures: 10,
+          completedLectures: 0,
+        });
+        validModuleId = createdId;
       }
+    }
 
+    if (!user) {
+      const item: StudyItemRecord = {
+        id: makeLocalId('study'),
+        ownerId: PERSONAL_OWNER_ID,
+        moduleId: sanitizeString(validModuleId, 128),
+        moduleCode: sanitizeString(validModuleCode, 32, 'MOD'),
+        title: sanitizeString(data.title, 200, 'Lecture Topic'),
+        itemType: data.itemType,
+        status: data.status || 'unstudied',
+        importance: data.importance || 'high',
+        estimatedMinutes: Math.max(1, Math.min(600, Math.round(data.estimatedMinutes || 45))),
+        confidenceRating: Math.max(1, Math.min(5, Math.round(data.confidenceRating || 3))),
+        repetitionCount: Math.max(0, Math.round(data.repetitionCount || 0)),
+        nextReviewDate: sanitizeString(data.nextReviewDate, 32, todayDate),
+        ...(data.stabilityDays !== undefined ? { stabilityDays: data.stabilityDays } : {}),
+        ...(data.difficultyScore !== undefined ? { difficultyScore: data.difficultyScore } : {}),
+        ...(data.lastStudiedDate ? { lastStudiedDate: sanitizeString(data.lastStudiedDate, 32) } : {}),
+        ...(data.notes ? { notes: sanitizeString(data.notes, 4000) } : {}),
+        ...(data.frontPrompt ? { frontPrompt: sanitizeString(data.frontPrompt, 500) } : {}),
+        ...(data.backAnswer ? { backAnswer: sanitizeString(data.backAnswer, 2000) } : {}),
+        ...(data.sourceRef ? { sourceRef: sanitizeString(data.sourceRef, 200) } : {}),
+      };
+      setStudyItems((prev) => [...prev, item]);
+      return;
+    }
+
+    try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
         moduleId: sanitizeString(validModuleId, 128),
@@ -1117,7 +1312,10 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteStudyItem = async (itemId: string) => {
-    if (!user) return;
+    if (!user) {
+      setStudyItems((prev) => prev.filter((s) => s.id !== itemId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'study_items', itemId));
     } catch (err) {
@@ -1130,7 +1328,6 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     confidenceRating: number,
     _durationMinutes: number
   ) => {
-    if (!user) return;
     const rating = Math.max(1, Math.min(5, Math.round(confidenceRating)));
     const prevReps = item.repetitionCount || 0;
     const prevStability = item.stabilityDays || 1;
@@ -1145,6 +1342,42 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const newStatus: StudyItemRecord['status'] =
       rating >= 4 && prevReps >= 2 ? 'mastered' : 'studied';
+
+    if (!user) {
+      setStudyItems((prev) =>
+        prev.map((s) =>
+          s.id === item.id
+            ? {
+                ...s,
+                status: newStatus,
+                confidenceRating: rating,
+                stabilityDays: nextStabilityDays,
+                repetitionCount: prevReps + 1,
+                lastStudiedDate: todayDate,
+                nextReviewDate,
+              }
+            : s
+        )
+      );
+      if (item.itemType === 'lecture' && item.status === 'unstudied') {
+        setStudyModules((prev) =>
+          prev.map((m) =>
+            m.id === item.moduleId
+              ? {
+                  ...m,
+                  completedLectures: Math.min(m.totalLectures, m.completedLectures + 1),
+                }
+              : m
+          )
+        );
+      }
+      await awardXpAndCoins(35, 15, {
+        activityKey: `study_rev_${item.id}_${todayDate}_${prevReps + 1}`,
+        reason: `Studied ${item.itemType}: ${item.title}`,
+        sourceModule: 'study',
+      });
+      return;
+    }
 
     try {
       await updateDoc(doc(db, 'study_items', item.id), {
@@ -1181,102 +1414,147 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     data: Omit<HealthLogRecord, 'id' | 'ownerId'>,
     scheduleOnCalendar = false
   ) => {
-    if (!user) return;
-    try {
-      const payload: Record<string, unknown> = {
-        ownerId: user.uid,
+    const ownerId = user?.uid || PERSONAL_OWNER_ID;
+    let createdLogId = makeLocalId('hl');
+
+    if (!user) {
+      const localRecord: HealthLogRecord = {
+        id: createdLogId,
+        ownerId,
         logType: data.logType,
         date: sanitizeString(data.date, 16, todayDate),
         title: sanitizeString(data.title, 200, 'Health Entry'),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        ...(data.weightKg !== undefined ? { weightKg: Number(data.weightKg) } : {}),
+        ...(data.waistCm !== undefined ? { waistCm: Number(data.waistCm) } : {}),
+        ...(data.chestCm !== undefined ? { chestCm: Number(data.chestCm) } : {}),
+        ...(data.armsCm !== undefined ? { armsCm: Number(data.armsCm) } : {}),
+        ...(data.durationMinutes !== undefined
+          ? { durationMinutes: Math.round(data.durationMinutes) }
+          : {}),
+        ...(data.volumeKg !== undefined ? { volumeKg: Math.round(data.volumeKg) } : {}),
+        ...(data.rpe !== undefined ? { rpe: Math.max(1, Math.min(10, Math.round(data.rpe))) } : {}),
+        ...(data.exercisesSummary
+          ? { exercisesSummary: sanitizeString(data.exercisesSummary, 1500) }
+          : {}),
+        ...(data.calories !== undefined ? { calories: Math.round(data.calories) } : {}),
+        ...(data.proteinGrams !== undefined
+          ? { proteinGrams: Math.round(data.proteinGrams) }
+          : {}),
+        ...(data.carbsGrams !== undefined ? { carbsGrams: Math.round(data.carbsGrams) } : {}),
+        ...(data.fatGrams !== undefined ? { fatGrams: Math.round(data.fatGrams) } : {}),
+        ...(data.notes ? { notes: sanitizeString(data.notes, 1000) } : {}),
       };
-      if (data.weightKg !== undefined) payload.weightKg = Number(data.weightKg);
-      if (data.waistCm !== undefined) payload.waistCm = Number(data.waistCm);
-      if (data.chestCm !== undefined) payload.chestCm = Number(data.chestCm);
-      if (data.armsCm !== undefined) payload.armsCm = Number(data.armsCm);
-      if (data.durationMinutes !== undefined) {
-        payload.durationMinutes = Math.round(data.durationMinutes);
-      }
-      if (data.volumeKg !== undefined) payload.volumeKg = Math.round(data.volumeKg);
-      if (data.rpe !== undefined) payload.rpe = Math.max(1, Math.min(10, Math.round(data.rpe)));
-      if (data.exercisesSummary) {
-        payload.exercisesSummary = sanitizeString(data.exercisesSummary, 1500);
-      }
-      if (data.calories !== undefined) payload.calories = Math.round(data.calories);
-      if (data.proteinGrams !== undefined) payload.proteinGrams = Math.round(data.proteinGrams);
-      if (data.carbsGrams !== undefined) payload.carbsGrams = Math.round(data.carbsGrams);
-      if (data.fatGrams !== undefined) payload.fatGrams = Math.round(data.fatGrams);
-      if (data.notes) payload.notes = sanitizeString(data.notes, 1000);
+      setHealthLogs((prev) => [localRecord, ...prev]);
+    } else {
+      try {
+        const payload: Record<string, unknown> = {
+          ownerId: user.uid,
+          logType: data.logType,
+          date: sanitizeString(data.date, 16, todayDate),
+          title: sanitizeString(data.title, 200, 'Health Entry'),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        if (data.weightKg !== undefined) payload.weightKg = Number(data.weightKg);
+        if (data.waistCm !== undefined) payload.waistCm = Number(data.waistCm);
+        if (data.chestCm !== undefined) payload.chestCm = Number(data.chestCm);
+        if (data.armsCm !== undefined) payload.armsCm = Number(data.armsCm);
+        if (data.durationMinutes !== undefined) {
+          payload.durationMinutes = Math.round(data.durationMinutes);
+        }
+        if (data.volumeKg !== undefined) payload.volumeKg = Math.round(data.volumeKg);
+        if (data.rpe !== undefined) payload.rpe = Math.max(1, Math.min(10, Math.round(data.rpe)));
+        if (data.exercisesSummary) {
+          payload.exercisesSummary = sanitizeString(data.exercisesSummary, 1500);
+        }
+        if (data.calories !== undefined) payload.calories = Math.round(data.calories);
+        if (data.proteinGrams !== undefined) payload.proteinGrams = Math.round(data.proteinGrams);
+        if (data.carbsGrams !== undefined) payload.carbsGrams = Math.round(data.carbsGrams);
+        if (data.fatGrams !== undefined) payload.fatGrams = Math.round(data.fatGrams);
+        if (data.notes) payload.notes = sanitizeString(data.notes, 1000);
 
-      const ref = await addDoc(collection(db, 'health_logs'), payload);
+        const ref = await addDoc(collection(db, 'health_logs'), payload);
+        createdLogId = ref.id;
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, 'health_logs');
+        return;
+      }
+    }
 
-      if (data.logType === 'workout') {
-        await awardXpAndCoins(40, 15);
-        const parsedExercises = parseExercisesFromWorkoutInput(
-          data.exercisesSummary,
-          data.title,
-          data.volumeKg || 0,
-          data.rpe || 8
-        );
-        const loadEntry = buildTrainingLoadLog({
-          workoutId: ref.id,
-          workoutTitle: data.title,
+    if (data.logType === 'workout') {
+      await awardXpAndCoins(40, 15, {
+        activityKey: `workout_${createdLogId}`,
+        reason: `Logged Workout: ${data.title}`,
+        sourceModule: 'workout',
+      });
+      const parsedExercises = parseExercisesFromWorkoutInput(
+        data.exercisesSummary,
+        data.title,
+        data.volumeKg || 0,
+        data.rpe || 8
+      );
+      const loadEntry = buildTrainingLoadLog({
+        workoutId: createdLogId,
+        workoutTitle: data.title,
+        date: data.date || todayDate,
+        durationMinutes: data.durationMinutes || 45,
+        rpe: data.rpe || 8,
+        exercises: parsedExercises,
+        fallbackVolumeKg: data.volumeKg,
+        ownerId,
+      });
+      const prResult = evaluateAndUpdatePersonalRecords({
+        existingPRs: personalRecords,
+        workoutId: createdLogId,
+        workoutDate: data.date || todayDate,
+        exercises: parsedExercises,
+        ownerId,
+      });
+      const nextLoadLogs = [
+        loadEntry,
+        ...trainingLoadLogs.filter((l) => l.workoutId !== createdLogId),
+      ];
+      setTrainingLoadLogs(nextLoadLogs);
+      setPersonalRecords(prResult.updatedPRs);
+      if (prResult.celebrationMessages.length > 0) {
+        setPrCelebrationBanner(prResult.celebrationMessages);
+      }
+      await persistFitnessIntelStore({
+        prs: prResult.updatedPRs,
+        tloads: nextLoadLogs,
+        recoveries: recoveryLogs,
+        schedules: workoutSchedules,
+        reports: weeklyFitnessReports,
+        targetW: targetWeightKg,
+        summaryNote: `Logged workout "${data.title}" (${loadEntry.rawVolumeKg}kg volume, ${prResult.newlyBrokenPRs.length} new PRs)`,
+      });
+
+      if (scheduleOnCalendar) {
+        await createCalendarEvent({
+          title: `Workout: ${data.title}`,
+          eventType: 'workout',
           date: data.date || todayDate,
-          durationMinutes: data.durationMinutes || 45,
-          rpe: data.rpe || 8,
-          exercises: parsedExercises,
-          fallbackVolumeKg: data.volumeKg,
-          ownerId: user.uid,
+          startTime: '17:30',
+          endTime: '18:30',
+          location: 'Gym',
+          isProtectedAnchor: false,
+          linkedRecordId: createdLogId,
         });
-        const prResult = evaluateAndUpdatePersonalRecords({
-          existingPRs: personalRecords,
-          workoutId: ref.id,
-          workoutDate: data.date || todayDate,
-          exercises: parsedExercises,
-          ownerId: user.uid,
-        });
-        const nextLoadLogs = [
-          loadEntry,
-          ...trainingLoadLogs.filter((l) => l.workoutId !== ref.id),
-        ];
-        setTrainingLoadLogs(nextLoadLogs);
-        setPersonalRecords(prResult.updatedPRs);
-        if (prResult.celebrationMessages.length > 0) {
-          setPrCelebrationBanner(prResult.celebrationMessages);
-        }
-        await persistFitnessIntelStore({
-          prs: prResult.updatedPRs,
-          tloads: nextLoadLogs,
-          recoveries: recoveryLogs,
-          schedules: workoutSchedules,
-          reports: weeklyFitnessReports,
-          targetW: targetWeightKg,
-          summaryNote: `Logged workout "${data.title}" (${loadEntry.rawVolumeKg}kg volume, ${prResult.newlyBrokenPRs.length} new PRs)`,
-        });
-
-        if (scheduleOnCalendar) {
-          await createCalendarEvent({
-            title: `Workout: ${data.title}`,
-            eventType: 'workout',
-            date: data.date || todayDate,
-            startTime: '17:30',
-            endTime: '18:30',
-            location: 'Gym',
-            isProtectedAnchor: false,
-            linkedRecordId: ref.id,
-          });
-        }
-      } else {
-        await awardXpAndCoins(10, 5);
       }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'health_logs');
+    } else {
+      await awardXpAndCoins(10, 5, {
+        activityKey: `health_${createdLogId}`,
+        reason: `Logged ${data.logType}: ${data.title}`,
+        sourceModule: 'workout',
+      });
     }
   };
 
   const deleteHealthLog = async (logId: string) => {
-    if (!user) return;
+    if (!user) {
+      setHealthLogs((prev) => prev.filter((h) => h.id !== logId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'health_logs', logId));
     } catch (err) {
@@ -1285,16 +1563,41 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const createFinanceRecord = async (data: Omit<FinanceRecordItem, 'id' | 'ownerId'>) => {
-    if (!user) return;
+    const cleanTitle = sanitizeString(data.title, 200, 'Transaction');
+    const cleanCategory = sanitizeString(data.category, 64, 'General');
+    const cleanAccount = sanitizeString(data.accountName, 64, 'Cash');
+    const cleanAmount = Math.max(0, Math.round(data.amountMinor));
+    const cleanDate = sanitizeString(data.date, 16, todayDate);
+
+    if (!user) {
+      const rec: FinanceRecordItem = {
+        id: makeLocalId('fin'),
+        ownerId: PERSONAL_OWNER_ID,
+        recordType: data.recordType,
+        title: cleanTitle,
+        category: cleanCategory,
+        accountName: cleanAccount,
+        amountMinor: cleanAmount,
+        date: cleanDate,
+        ...(data.targetAmountMinor !== undefined
+          ? { targetAmountMinor: Math.max(0, Math.round(data.targetAmountMinor)) }
+          : {}),
+        ...(typeof data.isRecurring === 'boolean' ? { isRecurring: data.isRecurring } : {}),
+        ...(data.notes ? { notes: sanitizeString(data.notes, 1000) } : {}),
+      };
+      setFinanceRecords((prev) => [rec, ...prev]);
+      return;
+    }
+
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
         recordType: data.recordType,
-        title: sanitizeString(data.title, 200, 'Transaction'),
-        category: sanitizeString(data.category, 64, 'General'),
-        accountName: sanitizeString(data.accountName, 64, 'Cash'),
-        amountMinor: Math.max(0, Math.round(data.amountMinor)),
-        date: sanitizeString(data.date, 16, todayDate),
+        title: cleanTitle,
+        category: cleanCategory,
+        accountName: cleanAccount,
+        amountMinor: cleanAmount,
+        date: cleanDate,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -1311,7 +1614,10 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteFinanceRecord = async (recordId: string) => {
-    if (!user) return;
+    if (!user) {
+      setFinanceRecords((prev) => prev.filter((f) => f.id !== recordId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'finance_records', recordId));
     } catch (err) {
@@ -1320,16 +1626,43 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const createKnowledgeItem = async (data: Omit<KnowledgeItemRecord, 'id' | 'ownerId'>) => {
-    if (!user) return;
+    const cleanTitle = sanitizeString(data.title, 200, 'Resource');
+    const cleanStatus = data.status || 'in_progress';
+    const cleanCurrent = Math.max(0, Math.round(data.progressCurrent || 0));
+    const cleanTotal = Math.max(1, Math.round(data.progressTotal || 100));
+    const cleanUnit = sanitizeString(data.progressUnit, 32, 'pages');
+
+    if (!user) {
+      const rec: KnowledgeItemRecord = {
+        id: makeLocalId('know'),
+        ownerId: PERSONAL_OWNER_ID,
+        itemType: data.itemType,
+        title: cleanTitle,
+        status: cleanStatus,
+        progressCurrent: cleanCurrent,
+        progressTotal: cleanTotal,
+        progressUnit: cleanUnit,
+        ...(data.authorOrSource ? { authorOrSource: sanitizeString(data.authorOrSource, 150) } : {}),
+        ...(data.rating !== undefined
+          ? { rating: Math.max(1, Math.min(5, Math.round(data.rating))) }
+          : {}),
+        ...(data.tags ? { tags: sanitizeString(data.tags, 200) } : {}),
+        ...(data.takeaways ? { takeaways: sanitizeString(data.takeaways, 4000) } : {}),
+        ...(data.linkedEntityId ? { linkedEntityId: sanitizeString(data.linkedEntityId, 128) } : {}),
+      };
+      setKnowledgeItems((prev) => [rec, ...prev]);
+      return;
+    }
+
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
         itemType: data.itemType,
-        title: sanitizeString(data.title, 200, 'Resource'),
-        status: data.status || 'in_progress',
-        progressCurrent: Math.max(0, Math.round(data.progressCurrent || 0)),
-        progressTotal: Math.max(1, Math.round(data.progressTotal || 100)),
-        progressUnit: sanitizeString(data.progressUnit, 32, 'pages'),
+        title: cleanTitle,
+        status: cleanStatus,
+        progressCurrent: cleanCurrent,
+        progressTotal: cleanTotal,
+        progressUnit: cleanUnit,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -1352,10 +1685,33 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     newCurrent: number,
     takeaways?: string
   ) => {
-    if (!user) return;
     const clamped = Math.max(0, Math.min(item.progressTotal, Math.round(newCurrent)));
     const nextStatus: KnowledgeItemRecord['status'] =
       clamped >= item.progressTotal ? 'completed' : 'in_progress';
+
+    if (!user) {
+      setKnowledgeItems((prev) =>
+        prev.map((k) =>
+          k.id === item.id
+            ? {
+                ...k,
+                progressCurrent: clamped,
+                status: nextStatus,
+                ...(takeaways !== undefined ? { takeaways: sanitizeString(takeaways, 4000) } : {}),
+              }
+            : k
+        )
+      );
+      if (nextStatus === 'completed' && item.status !== 'completed') {
+        await awardXpAndCoins(50, 25, {
+          activityKey: `knowledge_complete_${item.id}`,
+          reason: `Completed Library Item: ${item.title}`,
+          sourceModule: 'study',
+        });
+      }
+      return;
+    }
+
     try {
       const payload: Record<string, unknown> = {
         progressCurrent: clamped,
@@ -1365,7 +1721,11 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (takeaways !== undefined) payload.takeaways = sanitizeString(takeaways, 4000);
       await updateDoc(doc(db, 'knowledge_items', item.id), payload);
       if (nextStatus === 'completed' && item.status !== 'completed') {
-        await awardXpAndCoins(50, 25);
+        await awardXpAndCoins(50, 25, {
+          activityKey: `knowledge_complete_${item.id}`,
+          reason: `Completed Library Item: ${item.title}`,
+          sourceModule: 'study',
+        });
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `knowledge_items/${item.id}`);
@@ -1373,7 +1733,10 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteKnowledgeItem = async (itemId: string) => {
-    if (!user) return;
+    if (!user) {
+      setKnowledgeItems((prev) => prev.filter((k) => k.id !== itemId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'knowledge_items', itemId));
     } catch (err) {
@@ -1382,19 +1745,53 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const createGoalHabit = async (data: Omit<GoalHabitRecord, 'id' | 'ownerId'>) => {
-    if (!user) return;
+    const cleanTitle = sanitizeString(data.title, 200, 'Goal / Habit');
+    const cleanStatus = data.status || 'active';
+    const cleanFreq = data.frequency || 'daily';
+    const cleanProgress = Math.max(0, Math.min(100, Math.round(data.progressPercent || 0)));
+    const cleanStreak = Math.max(0, Math.round(data.streakCount || 0));
+    const cleanDone = Boolean(data.completedToday);
+    const cleanXp = Math.max(0, Math.min(10000, Math.round(data.xpReward || 25)));
+    const cleanCoins = Math.max(0, Math.min(100000, Math.round(data.coinCostOrReward || 15)));
+
+    if (!user) {
+      const rec: GoalHabitRecord = {
+        id: makeLocalId('gh'),
+        ownerId: PERSONAL_OWNER_ID,
+        recordType: data.recordType,
+        title: cleanTitle,
+        status: cleanStatus,
+        frequency: cleanFreq,
+        progressPercent: cleanProgress,
+        streakCount: cleanStreak,
+        completedToday: cleanDone,
+        xpReward: cleanXp,
+        coinCostOrReward: cleanCoins,
+        ...(data.whyReason ? { whyReason: sanitizeString(data.whyReason, 500) } : {}),
+        ...(data.lastCompletedDate
+          ? { lastCompletedDate: sanitizeString(data.lastCompletedDate, 16) }
+          : {}),
+        ...(data.targetDate ? { targetDate: sanitizeString(data.targetDate, 16) } : {}),
+        ...(data.nextSmallAction
+          ? { nextSmallAction: sanitizeString(data.nextSmallAction, 300) }
+          : {}),
+      };
+      setGoalsHabits((prev) => [rec, ...prev]);
+      return;
+    }
+
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
         recordType: data.recordType,
-        title: sanitizeString(data.title, 200, 'Goal / Habit'),
-        status: data.status || 'active',
-        frequency: data.frequency || 'daily',
-        progressPercent: Math.max(0, Math.min(100, Math.round(data.progressPercent || 0))),
-        streakCount: Math.max(0, Math.round(data.streakCount || 0)),
-        completedToday: Boolean(data.completedToday),
-        xpReward: Math.max(0, Math.min(10000, Math.round(data.xpReward || 25))),
-        coinCostOrReward: Math.max(0, Math.min(100000, Math.round(data.coinCostOrReward || 15))),
+        title: cleanTitle,
+        status: cleanStatus,
+        frequency: cleanFreq,
+        progressPercent: cleanProgress,
+        streakCount: cleanStreak,
+        completedToday: cleanDone,
+        xpReward: cleanXp,
+        coinCostOrReward: cleanCoins,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -1414,7 +1811,6 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const toggleHabitOrGoalCompletion = async (record: GoalHabitRecord) => {
-    if (!user) return;
     const nextDone = !record.completedToday;
     const nextStreak = nextDone ? record.streakCount + 1 : Math.max(0, record.streakCount - 1);
     const nextProgress =
@@ -1423,13 +1819,41 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         : nextDone
         ? 100
         : 0;
+    const nextStatus: GoalHabitRecord['status'] =
+      nextProgress >= 100 && record.recordType !== 'habit' ? 'completed' : 'active';
+
+    if (!user) {
+      setGoalsHabits((prev) =>
+        prev.map((g) =>
+          g.id === record.id
+            ? {
+                ...g,
+                completedToday: nextDone,
+                streakCount: nextStreak,
+                progressPercent: Math.max(0, nextProgress),
+                lastCompletedDate: todayDate,
+                status: nextStatus,
+              }
+            : g
+        )
+      );
+      if (nextDone) {
+        await awardXpAndCoins(record.xpReward || 25, record.coinCostOrReward || 10, {
+          activityKey: `habit_goal_${record.id}_${todayDate}`,
+          reason: `Completed ${record.recordType}: ${record.title}`,
+          sourceModule: 'habit',
+        });
+      }
+      return;
+    }
+
     try {
       await updateDoc(doc(db, 'goals_habits', record.id), {
         completedToday: nextDone,
         streakCount: nextStreak,
         progressPercent: Math.max(0, nextProgress),
         lastCompletedDate: todayDate,
-        status: nextProgress >= 100 && record.recordType !== 'habit' ? 'completed' : 'active',
+        status: nextStatus,
         updatedAt: serverTimestamp(),
       });
       if (nextDone) {
@@ -1445,7 +1869,10 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteGoalHabit = async (recordId: string) => {
-    if (!user) return;
+    if (!user) {
+      setGoalsHabits((prev) => prev.filter((g) => g.id !== recordId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'goals_habits', recordId));
     } catch (err) {
@@ -1454,9 +1881,12 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const redeemReward = async (reward: GoalHabitRecord) => {
-    if (!user || !profile) return;
+    if (!profile) return;
     if (profile.coins < reward.coinCostOrReward) return;
-    await awardXpAndCoins(0, -reward.coinCostOrReward);
+    await awardXpAndCoins(0, -reward.coinCostOrReward, {
+      reason: `Redeemed Reward: ${reward.title}`,
+      sourceModule: 'shop',
+    });
     await logAiAction({
       actionTitle: `Redeemed Reward: ${reward.title}`,
       toolName: 'redeem_reward',
@@ -1468,20 +1898,41 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const logAiAction = async (data: Omit<AiActionLogRecord, 'id' | 'ownerId'>) => {
-    if (!user) return;
+    const cleanTitle = sanitizeString(data.actionTitle, 200, 'AI Action');
+    const cleanTool = sanitizeString(data.toolName, 100, 'assistant_tool');
+    const cleanTarget = sanitizeString(data.targetModule, 64, 'System');
+    const cleanSummary = sanitizeString(data.summary, 1500, 'Executed action');
+    const cleanPayload = data.payloadJson ? sanitizeString(data.payloadJson, 4000) : undefined;
+
+    if (!user) {
+      const rec: AiActionLogRecord = {
+        id: makeLocalId('ailog'),
+        ownerId: PERSONAL_OWNER_ID,
+        actionTitle: cleanTitle,
+        toolName: cleanTool,
+        permissionLevel: data.permissionLevel,
+        status: data.status,
+        targetModule: cleanTarget,
+        summary: cleanSummary,
+        ...(cleanPayload ? { payloadJson: cleanPayload } : {}),
+      };
+      setAiLogs((prev) => [rec, ...prev]);
+      return;
+    }
+
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
-        actionTitle: sanitizeString(data.actionTitle, 200, 'AI Action'),
-        toolName: sanitizeString(data.toolName, 100, 'assistant_tool'),
+        actionTitle: cleanTitle,
+        toolName: cleanTool,
         permissionLevel: data.permissionLevel,
         status: data.status,
-        targetModule: sanitizeString(data.targetModule, 64, 'System'),
-        summary: sanitizeString(data.summary, 1500, 'Executed action'),
+        targetModule: cleanTarget,
+        summary: cleanSummary,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
-      if (data.payloadJson) payload.payloadJson = sanitizeString(data.payloadJson, 4000);
+      if (cleanPayload) payload.payloadJson = cleanPayload;
       await addDoc(collection(db, 'ai_action_logs'), payload);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'ai_action_logs');
@@ -1492,7 +1943,6 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     log: AiActionLogRecord,
     decision: 'approved' | 'rejected' | 'undone'
   ) => {
-    if (!user) return;
     try {
       if (decision === 'approved' && log.payloadJson) {
         const parsed = JSON.parse(log.payloadJson);
@@ -1520,17 +1970,30 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           }
         }
       }
+
+      if (!user) {
+        setAiLogs((prev) =>
+          prev.map((a) => (a.id === log.id ? { ...a, status: decision } : a))
+        );
+        return;
+      }
+
       await updateDoc(doc(db, 'ai_action_logs', log.id), {
         status: decision,
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `ai_action_logs/${log.id}`);
+      if (user) {
+        handleFirestoreError(err, OperationType.UPDATE, `ai_action_logs/${log.id}`);
+      }
     }
   };
 
   const deleteAiLog = async (logId: string) => {
-    if (!user) return;
+    if (!user) {
+      setAiLogs((prev) => prev.filter((a) => a.id !== logId));
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'ai_action_logs', logId));
     } catch (err) {
@@ -1539,17 +2002,49 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const saveDailyReview = async (data: Omit<DailyReviewRecord, 'id' | 'ownerId'>) => {
-    if (!user) return;
+    const cleanDate = sanitizeString(data.date, 16, todayDate);
+    const cleanCommit = Math.max(0, Math.min(100, Math.round(data.commitmentScore)));
+    const cleanComp = Math.max(0, Math.min(100, Math.round(data.completionScore)));
+    const cleanCons = Math.max(0, Math.min(100, Math.round(data.consistencyScore)));
+    const cleanPlan = Math.max(0, Math.min(100, Math.round(data.planningAccuracyScore)));
+    const cleanWell = Math.max(0, Math.min(100, Math.round(data.wellbeingScore)));
+
+    if (!user) {
+      const rec: DailyReviewRecord = {
+        id: makeLocalId('rev'),
+        ownerId: PERSONAL_OWNER_ID,
+        date: cleanDate,
+        energyLevel: data.energyLevel,
+        commitmentScore: cleanCommit,
+        completionScore: cleanComp,
+        consistencyScore: cleanCons,
+        planningAccuracyScore: cleanPlan,
+        wellbeingScore: cleanWell,
+        ...(data.wins ? { wins: sanitizeString(data.wins, 1000) } : {}),
+        ...(data.obstacles ? { obstacles: sanitizeString(data.obstacles, 1000) } : {}),
+        ...(data.tomorrowAdjustment
+          ? { tomorrowAdjustment: sanitizeString(data.tomorrowAdjustment, 1000) }
+          : {}),
+      };
+      setDailyReviews((prev) => [rec, ...prev.filter((r) => r.date !== cleanDate)]);
+      await awardXpAndCoins(30, 15, {
+        activityKey: `daily_review_${cleanDate}`,
+        reason: `Completed Daily Review (${cleanDate})`,
+        sourceModule: 'mission',
+      });
+      return;
+    }
+
     try {
       const payload: Record<string, unknown> = {
         ownerId: user.uid,
-        date: sanitizeString(data.date, 16, todayDate),
+        date: cleanDate,
         energyLevel: data.energyLevel,
-        commitmentScore: Math.max(0, Math.min(100, Math.round(data.commitmentScore))),
-        completionScore: Math.max(0, Math.min(100, Math.round(data.completionScore))),
-        consistencyScore: Math.max(0, Math.min(100, Math.round(data.consistencyScore))),
-        planningAccuracyScore: Math.max(0, Math.min(100, Math.round(data.planningAccuracyScore))),
-        wellbeingScore: Math.max(0, Math.min(100, Math.round(data.wellbeingScore))),
+        commitmentScore: cleanCommit,
+        completionScore: cleanComp,
+        consistencyScore: cleanCons,
+        planningAccuracyScore: cleanPlan,
+        wellbeingScore: cleanWell,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -1560,7 +2055,11 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
 
       await addDoc(collection(db, 'daily_reviews'), payload);
-      await awardXpAndCoins(30, 15);
+      await awardXpAndCoins(30, 15, {
+        activityKey: `daily_review_${cleanDate}`,
+        reason: `Completed Daily Review (${cleanDate})`,
+        sourceModule: 'mission',
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'daily_reviews');
     }
@@ -1570,19 +2069,27 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     eventId: string,
     partial: Partial<Omit<CalendarEventItem, 'id' | 'ownerId'>>
   ) => {
-    if (!user) return;
+    const clean: Partial<CalendarEventItem> = {};
+    if (partial.title !== undefined) clean.title = sanitizeString(partial.title, 200);
+    if (partial.eventType !== undefined) clean.eventType = partial.eventType;
+    if (partial.date !== undefined) clean.date = sanitizeString(partial.date, 16);
+    if (partial.startTime !== undefined) clean.startTime = sanitizeString(partial.startTime, 10);
+    if (partial.endTime !== undefined) clean.endTime = sanitizeString(partial.endTime, 10);
+    if (partial.location !== undefined) clean.location = sanitizeString(partial.location, 200);
+    if (partial.isProtectedAnchor !== undefined) {
+      clean.isProtectedAnchor = Boolean(partial.isProtectedAnchor);
+    }
+
+    if (!user) {
+      setEvents((prev) => prev.map((e) => (e.id === eventId ? { ...e, ...clean } : e)));
+      return;
+    }
+
     try {
-      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
-      if (partial.eventType !== undefined) payload.eventType = partial.eventType;
-      if (partial.date !== undefined) payload.date = sanitizeString(partial.date, 16);
-      if (partial.startTime !== undefined) payload.startTime = sanitizeString(partial.startTime, 10);
-      if (partial.endTime !== undefined) payload.endTime = sanitizeString(partial.endTime, 10);
-      if (partial.location !== undefined) payload.location = sanitizeString(partial.location, 200);
-      if (partial.isProtectedAnchor !== undefined) {
-        payload.isProtectedAnchor = Boolean(partial.isProtectedAnchor);
-      }
-      await updateDoc(doc(db, 'calendar_events', eventId), payload);
+      await updateDoc(doc(db, 'calendar_events', eventId), {
+        ...clean,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `calendar_events/${eventId}`);
     }
@@ -1592,26 +2099,31 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     moduleId: string,
     partial: Partial<Omit<StudyModuleItem, 'id' | 'ownerId'>>
   ) => {
-    if (!user) return;
+    const clean: Partial<StudyModuleItem> = {};
+    if (partial.code !== undefined) clean.code = sanitizeString(partial.code, 32);
+    if (partial.title !== undefined) clean.title = sanitizeString(partial.title, 200);
+    if (partial.term !== undefined) clean.term = sanitizeString(partial.term, 64);
+    if (partial.examDate !== undefined) clean.examDate = sanitizeString(partial.examDate, 32);
+    if (partial.targetGrade !== undefined) {
+      clean.targetGrade = sanitizeString(partial.targetGrade, 16);
+    }
+    if (partial.totalLectures !== undefined) {
+      clean.totalLectures = Math.max(0, Math.min(500, Math.round(partial.totalLectures)));
+    }
+    if (partial.completedLectures !== undefined) {
+      clean.completedLectures = Math.max(0, Math.min(500, Math.round(partial.completedLectures)));
+    }
+
+    if (!user) {
+      setStudyModules((prev) => prev.map((m) => (m.id === moduleId ? { ...m, ...clean } : m)));
+      return;
+    }
+
     try {
-      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-      if (partial.code !== undefined) payload.code = sanitizeString(partial.code, 32);
-      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
-      if (partial.term !== undefined) payload.term = sanitizeString(partial.term, 64);
-      if (partial.examDate !== undefined) payload.examDate = sanitizeString(partial.examDate, 32);
-      if (partial.targetGrade !== undefined) {
-        payload.targetGrade = sanitizeString(partial.targetGrade, 16);
-      }
-      if (partial.totalLectures !== undefined) {
-        payload.totalLectures = Math.max(0, Math.min(500, Math.round(partial.totalLectures)));
-      }
-      if (partial.completedLectures !== undefined) {
-        payload.completedLectures = Math.max(
-          0,
-          Math.min(500, Math.round(partial.completedLectures))
-        );
-      }
-      await updateDoc(doc(db, 'study_modules', moduleId), payload);
+      await updateDoc(doc(db, 'study_modules', moduleId), {
+        ...clean,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `study_modules/${moduleId}`);
     }
@@ -1621,29 +2133,40 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     itemId: string,
     partial: Partial<Omit<StudyItemRecord, 'id' | 'ownerId' | 'moduleId'>>
   ) => {
-    if (!user) return;
+    const clean: Partial<StudyItemRecord> = {};
+    if (partial.title !== undefined) clean.title = sanitizeString(partial.title, 200);
+    if (partial.status !== undefined) clean.status = partial.status;
+    if (partial.importance !== undefined) clean.importance = partial.importance;
+    if (partial.estimatedMinutes !== undefined) {
+      clean.estimatedMinutes = Math.max(1, Math.min(600, Math.round(partial.estimatedMinutes)));
+    }
+    if (partial.confidenceRating !== undefined) {
+      clean.confidenceRating = Math.max(1, Math.min(5, Math.round(partial.confidenceRating)));
+    }
+    if (partial.nextReviewDate !== undefined) {
+      clean.nextReviewDate = sanitizeString(partial.nextReviewDate, 32);
+    }
+    if (partial.lastStudiedDate !== undefined) {
+      clean.lastStudiedDate = sanitizeString(partial.lastStudiedDate, 32);
+    }
+    if (partial.notes !== undefined) clean.notes = sanitizeString(partial.notes, 4000);
+    if (partial.frontPrompt !== undefined) {
+      clean.frontPrompt = sanitizeString(partial.frontPrompt, 500);
+    }
+    if (partial.backAnswer !== undefined) {
+      clean.backAnswer = sanitizeString(partial.backAnswer, 2000);
+    }
+
+    if (!user) {
+      setStudyItems((prev) => prev.map((s) => (s.id === itemId ? { ...s, ...clean } : s)));
+      return;
+    }
+
     try {
-      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
-      if (partial.status !== undefined) payload.status = partial.status;
-      if (partial.importance !== undefined) payload.importance = partial.importance;
-      if (partial.estimatedMinutes !== undefined) {
-        payload.estimatedMinutes = Math.max(1, Math.min(600, Math.round(partial.estimatedMinutes)));
-      }
-      if (partial.confidenceRating !== undefined) {
-        payload.confidenceRating = Math.max(1, Math.min(5, Math.round(partial.confidenceRating)));
-      }
-      if (partial.nextReviewDate !== undefined) {
-        payload.nextReviewDate = sanitizeString(partial.nextReviewDate, 32);
-      }
-      if (partial.notes !== undefined) payload.notes = sanitizeString(partial.notes, 4000);
-      if (partial.frontPrompt !== undefined) {
-        payload.frontPrompt = sanitizeString(partial.frontPrompt, 500);
-      }
-      if (partial.backAnswer !== undefined) {
-        payload.backAnswer = sanitizeString(partial.backAnswer, 2000);
-      }
-      await updateDoc(doc(db, 'study_items', itemId), payload);
+      await updateDoc(doc(db, 'study_items', itemId), {
+        ...clean,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `study_items/${itemId}`);
     }
@@ -1653,21 +2176,27 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     logId: string,
     partial: Partial<Omit<HealthLogRecord, 'id' | 'ownerId'>>
   ) => {
-    if (!user) return;
+    const clean: Partial<HealthLogRecord> = {};
+    if (partial.title !== undefined) clean.title = sanitizeString(partial.title, 200);
+    if (partial.date !== undefined) clean.date = sanitizeString(partial.date, 16);
+    if (partial.weightKg !== undefined) clean.weightKg = Number(partial.weightKg);
+    if (partial.durationMinutes !== undefined) {
+      clean.durationMinutes = Math.round(partial.durationMinutes);
+    }
+    if (partial.calories !== undefined) clean.calories = Math.round(partial.calories);
+    if (partial.proteinGrams !== undefined) clean.proteinGrams = Math.round(partial.proteinGrams);
+    if (partial.notes !== undefined) clean.notes = sanitizeString(partial.notes, 1000);
+
+    if (!user) {
+      setHealthLogs((prev) => prev.map((h) => (h.id === logId ? { ...h, ...clean } : h)));
+      return;
+    }
+
     try {
-      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
-      if (partial.date !== undefined) payload.date = sanitizeString(partial.date, 16);
-      if (partial.weightKg !== undefined) payload.weightKg = Number(partial.weightKg);
-      if (partial.durationMinutes !== undefined) {
-        payload.durationMinutes = Math.round(partial.durationMinutes);
-      }
-      if (partial.calories !== undefined) payload.calories = Math.round(partial.calories);
-      if (partial.proteinGrams !== undefined) {
-        payload.proteinGrams = Math.round(partial.proteinGrams);
-      }
-      if (partial.notes !== undefined) payload.notes = sanitizeString(partial.notes, 1000);
-      await updateDoc(doc(db, 'health_logs', logId), payload);
+      await updateDoc(doc(db, 'health_logs', logId), {
+        ...clean,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `health_logs/${logId}`);
     }
@@ -1677,20 +2206,28 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     recordId: string,
     partial: Partial<Omit<FinanceRecordItem, 'id' | 'ownerId'>>
   ) => {
-    if (!user) return;
+    const clean: Partial<FinanceRecordItem> = {};
+    if (partial.title !== undefined) clean.title = sanitizeString(partial.title, 200);
+    if (partial.category !== undefined) clean.category = sanitizeString(partial.category, 64);
+    if (partial.accountName !== undefined) {
+      clean.accountName = sanitizeString(partial.accountName, 64);
+    }
+    if (partial.amountMinor !== undefined) {
+      clean.amountMinor = Math.max(0, Math.round(partial.amountMinor));
+    }
+    if (partial.date !== undefined) clean.date = sanitizeString(partial.date, 16);
+    if (partial.notes !== undefined) clean.notes = sanitizeString(partial.notes, 1000);
+
+    if (!user) {
+      setFinanceRecords((prev) => prev.map((f) => (f.id === recordId ? { ...f, ...clean } : f)));
+      return;
+    }
+
     try {
-      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
-      if (partial.category !== undefined) payload.category = sanitizeString(partial.category, 64);
-      if (partial.accountName !== undefined) {
-        payload.accountName = sanitizeString(partial.accountName, 64);
-      }
-      if (partial.amountMinor !== undefined) {
-        payload.amountMinor = Math.max(0, Math.round(partial.amountMinor));
-      }
-      if (partial.date !== undefined) payload.date = sanitizeString(partial.date, 16);
-      if (partial.notes !== undefined) payload.notes = sanitizeString(partial.notes, 1000);
-      await updateDoc(doc(db, 'finance_records', recordId), payload);
+      await updateDoc(doc(db, 'finance_records', recordId), {
+        ...clean,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `finance_records/${recordId}`);
     }
@@ -1700,25 +2237,31 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     itemId: string,
     partial: Partial<Omit<KnowledgeItemRecord, 'id' | 'ownerId'>>
   ) => {
-    if (!user) return;
+    const clean: Partial<KnowledgeItemRecord> = {};
+    if (partial.title !== undefined) clean.title = sanitizeString(partial.title, 200);
+    if (partial.authorOrSource !== undefined) {
+      clean.authorOrSource = sanitizeString(partial.authorOrSource, 150);
+    }
+    if (partial.status !== undefined) clean.status = partial.status;
+    if (partial.progressCurrent !== undefined) {
+      clean.progressCurrent = Math.max(0, Math.round(partial.progressCurrent));
+    }
+    if (partial.progressTotal !== undefined) {
+      clean.progressTotal = Math.max(1, Math.round(partial.progressTotal));
+    }
+    if (partial.takeaways !== undefined) clean.takeaways = sanitizeString(partial.takeaways, 4000);
+    if (partial.tags !== undefined) clean.tags = sanitizeString(partial.tags, 200);
+
+    if (!user) {
+      setKnowledgeItems((prev) => prev.map((k) => (k.id === itemId ? { ...k, ...clean } : k)));
+      return;
+    }
+
     try {
-      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
-      if (partial.authorOrSource !== undefined) {
-        payload.authorOrSource = sanitizeString(partial.authorOrSource, 150);
-      }
-      if (partial.status !== undefined) payload.status = partial.status;
-      if (partial.progressCurrent !== undefined) {
-        payload.progressCurrent = Math.max(0, Math.round(partial.progressCurrent));
-      }
-      if (partial.progressTotal !== undefined) {
-        payload.progressTotal = Math.max(1, Math.round(partial.progressTotal));
-      }
-      if (partial.takeaways !== undefined) {
-        payload.takeaways = sanitizeString(partial.takeaways, 4000);
-      }
-      if (partial.tags !== undefined) payload.tags = sanitizeString(partial.tags, 200);
-      await updateDoc(doc(db, 'knowledge_items', itemId), payload);
+      await updateDoc(doc(db, 'knowledge_items', itemId), {
+        ...clean,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `knowledge_items/${itemId}`);
     }
@@ -1728,61 +2271,96 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     recordId: string,
     partial: Partial<Omit<GoalHabitRecord, 'id' | 'ownerId'>>
   ) => {
-    if (!user) return;
+    const clean: Partial<GoalHabitRecord> = {};
+    if (partial.title !== undefined) clean.title = sanitizeString(partial.title, 200);
+    if (partial.whyReason !== undefined) clean.whyReason = sanitizeString(partial.whyReason, 500);
+    if (partial.status !== undefined) clean.status = partial.status;
+    if (partial.progressPercent !== undefined) {
+      clean.progressPercent = Math.max(0, Math.min(100, Math.round(partial.progressPercent)));
+    }
+    if (partial.completedToday !== undefined) clean.completedToday = Boolean(partial.completedToday);
+
+    if (!user) {
+      setGoalsHabits((prev) => prev.map((g) => (g.id === recordId ? { ...g, ...clean } : g)));
+      return;
+    }
+
     try {
-      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-      if (partial.title !== undefined) payload.title = sanitizeString(partial.title, 200);
-      if (partial.whyReason !== undefined) {
-        payload.whyReason = sanitizeString(partial.whyReason, 500);
-      }
-      if (partial.status !== undefined) payload.status = partial.status;
-      if (partial.progressPercent !== undefined) {
-        payload.progressPercent = Math.max(0, Math.min(100, Math.round(partial.progressPercent)));
-      }
-      if (partial.completedToday !== undefined) {
-        payload.completedToday = Boolean(partial.completedToday);
-      }
-      await updateDoc(doc(db, 'goals_habits', recordId), payload);
+      await updateDoc(doc(db, 'goals_habits', recordId), {
+        ...clean,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `goals_habits/${recordId}`);
     }
   };
 
   const clearAllWorkspaceData = async () => {
-    if (!user) return;
-    for (const s of studyItems) {
-      await deleteDoc(doc(db, 'study_items', s.id)).catch(() => {});
+    if (user) {
+      for (const s of studyItems) {
+        await deleteDoc(doc(db, 'study_items', s.id)).catch(() => {});
+      }
+      for (const m of studyModules) {
+        await deleteDoc(doc(db, 'study_modules', m.id)).catch(() => {});
+      }
+      for (const t of tasks) {
+        await deleteDoc(doc(db, 'tasks', t.id)).catch(() => {});
+      }
+      for (const e of events) {
+        await deleteDoc(doc(db, 'calendar_events', e.id)).catch(() => {});
+      }
+      for (const h of healthLogs) {
+        await deleteDoc(doc(db, 'health_logs', h.id)).catch(() => {});
+      }
+      for (const f of financeRecords) {
+        await deleteDoc(doc(db, 'finance_records', f.id)).catch(() => {});
+      }
+      for (const k of knowledgeItems) {
+        await deleteDoc(doc(db, 'knowledge_items', k.id)).catch(() => {});
+      }
+      for (const g of goalsHabits) {
+        await deleteDoc(doc(db, 'goals_habits', g.id)).catch(() => {});
+      }
+      for (const a of aiLogs) {
+        await deleteDoc(doc(db, 'ai_action_logs', a.id)).catch(() => {});
+      }
+      for (const r of dailyReviews) {
+        await deleteDoc(doc(db, 'daily_reviews', r.id)).catch(() => {});
+      }
     }
-    for (const m of studyModules) {
-      await deleteDoc(doc(db, 'study_modules', m.id)).catch(() => {});
-    }
-    for (const t of tasks) {
-      await deleteDoc(doc(db, 'tasks', t.id)).catch(() => {});
-    }
-    for (const e of events) {
-      await deleteDoc(doc(db, 'calendar_events', e.id)).catch(() => {});
-    }
-    for (const h of healthLogs) {
-      await deleteDoc(doc(db, 'health_logs', h.id)).catch(() => {});
-    }
-    for (const f of financeRecords) {
-      await deleteDoc(doc(db, 'finance_records', f.id)).catch(() => {});
-    }
-    for (const k of knowledgeItems) {
-      await deleteDoc(doc(db, 'knowledge_items', k.id)).catch(() => {});
-    }
-    for (const g of goalsHabits) {
-      await deleteDoc(doc(db, 'goals_habits', g.id)).catch(() => {});
-    }
-    for (const a of aiLogs) {
-      await deleteDoc(doc(db, 'ai_action_logs', a.id)).catch(() => {});
-    }
-    for (const r of dailyReviews) {
-      await deleteDoc(doc(db, 'daily_reviews', r.id)).catch(() => {});
-    }
+
+    setStudyItems([]);
+    setStudyModules([]);
+    setTasks([]);
+    setEvents([]);
+    setHealthLogs([]);
+    setFinanceRecords([]);
+    setKnowledgeItems([]);
+    setGoalsHabits([]);
+    setAiLogs([]);
+    setDailyReviews([]);
     setLocalPomodoroSessions([]);
+    setPersonalRecords([]);
+    setTrainingLoadLogs([]);
+    setRecoveryLogs([]);
+    setWorkoutSchedules([]);
+    setWeeklyFitnessReports([]);
+    setActiveScheduleProposal(null);
+    setRpgState(DEFAULT_RPG_STATE);
+    if (!user) {
+      setProfile(createDefaultPersonalProfile());
+    }
+
     try {
+      Object.values(LS_DATA_KEYS).forEach((k) => localStorage.removeItem(k));
       localStorage.removeItem('lifeos_pomodoro_sessions_v1');
+      localStorage.removeItem('lifeos_fitness_prs_v1');
+      localStorage.removeItem('lifeos_fitness_tload_v1');
+      localStorage.removeItem('lifeos_fitness_recovery_v1');
+      localStorage.removeItem('lifeos_fitness_schedules_v1');
+      localStorage.removeItem('lifeos_fitness_reports_v1');
+      localStorage.removeItem('lifeos_rpg_world_v1');
+      localStorage.removeItem('lifeos_active_schedule_proposal_v1');
     } catch {
       // ignore
     }
@@ -1914,7 +2492,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // Also ensure any existing completed workouts in health_logs have TrainingLoadLogs & PRs derived
   useEffect(() => {
-    if (!user) return;
+    const ownerId = user?.uid || PERSONAL_OWNER_ID;
     const workoutHealthLogs = healthLogs.filter((h) => h.logType === 'workout');
     if (workoutHealthLogs.length === 0) return;
     const existingIds = new Set(trainingLoadLogs.map((l) => l.workoutId));
@@ -1939,7 +2517,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           rpe: w.rpe || 8,
           exercises: exList,
           fallbackVolumeKg: w.volumeKg,
-          ownerId: user.uid,
+          ownerId,
         })
       );
       const prEval = evaluateAndUpdatePersonalRecords({
@@ -1947,7 +2525,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         workoutId: w.id,
         workoutDate: w.date,
         exercises: exList,
-        ownerId: user.uid,
+        ownerId,
       });
       nextPRs = prEval.updatedPRs;
     }
@@ -2046,7 +2624,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     notes?: string;
     scheduleIdToComplete?: string;
   }) => {
-    const ownerId = user?.uid || 'local_user';
+    const ownerId = user?.uid || PERSONAL_OWNER_ID;
     const workoutId = `wk_${Date.now()}`;
     const totalVol = data.exercises.reduce(
       (acc, ex) => acc + (ex.sets || 1) * (ex.reps || 1) * (ex.weightKg || 0),
@@ -2071,8 +2649,27 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       };
       if (data.notes) payload.notes = sanitizeString(data.notes, 1000);
       await addDoc(collection(db, 'health_logs'), payload);
-      await awardXpAndCoins(40, 15);
+    } else {
+      const localWorkout: HealthLogRecord = {
+        id: workoutId,
+        ownerId,
+        logType: 'workout',
+        date: sanitizeString(data.date, 16, todayDate),
+        title: sanitizeString(data.title, 200, 'Workout Session'),
+        durationMinutes: Math.max(1, Math.round(data.durationMinutes || 45)),
+        volumeKg: Math.round(totalVol),
+        rpe: Math.max(1, Math.min(10, Math.round(data.rpe || 8))),
+        exercisesSummary: sanitizeString(exercisesSummary, 1500),
+        ...(data.notes ? { notes: sanitizeString(data.notes, 1000) } : {}),
+      };
+      setHealthLogs((prev) => [localWorkout, ...prev]);
     }
+
+    await awardXpAndCoins(40, 15, {
+      activityKey: `workout_${workoutId}`,
+      reason: `Logged Workout: ${data.title}`,
+      sourceModule: 'workout',
+    });
 
     const loadEntry = buildTrainingLoadLog({
       workoutId,
@@ -2152,9 +2749,11 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       targetW: targetWeightKg,
       summaryNote: `Logged recovery check-in on ${data.date} (Score: ${data.generalRecoveryScore}/100)`,
     });
-    if (user) {
-      await awardXpAndCoins(15, 5);
-    }
+    await awardXpAndCoins(15, 5, {
+      activityKey: `recovery_${newRec.id}`,
+      reason: `Logged Recovery Check-in (${data.date})`,
+      sourceModule: 'workout',
+    });
   };
 
   const deleteRecoveryLog = async (id: string) => {
@@ -2179,7 +2778,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const newSched: WorkoutSchedule = {
       ...data,
       id: schedId,
-      ownerId: user?.uid || 'local_user',
+      ownerId: user?.uid || PERSONAL_OWNER_ID,
       status: data.status || 'planned', // Never mark completed merely because scheduled!
       updatedAt: new Date().toISOString(),
     };
@@ -2188,7 +2787,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     );
     setWorkoutSchedules(next);
 
-    if (syncToLifeOSCalendar && data.status !== 'rest_day' && user) {
+    if (syncToLifeOSCalendar && data.status !== 'rest_day') {
       await createCalendarEvent({
         title: `Workout: ${data.templateName}`,
         eventType: 'workout',
@@ -2857,30 +3456,30 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }${linkedTask ? ` · ${linkedTask.title}` : ''}`,
         payloadJson: JSON.stringify(newSession),
       });
+    }
 
-      // Credit XP and Coins (verified focus session with unique activityKey)
-      if (cleanMins >= 1) {
-        await awardXpAndCoins(cleanMins * 2, Math.max(8, Math.round(cleanMins * 0.6)), {
-          activityKey: `pomo_${newSession.id}`,
-          reason: `Completed ${cleanMins}m ${snapState.category} Pomodoro`,
-          sourceModule: 'pomodoro',
-        });
-      }
+    // Credit XP and Coins (verified focus session with unique activityKey)
+    if (cleanMins >= 1) {
+      await awardXpAndCoins(cleanMins * 2, Math.max(8, Math.round(cleanMins * 0.6)), {
+        activityKey: `pomo_${newSession.id}`,
+        reason: `Completed ${cleanMins}m ${snapState.category} Pomodoro`,
+        sourceModule: 'pomodoro',
+      });
+    }
 
-      // Update linked Task actualMinutes if present
-      if (linkedTask) {
-        await updateTask(linkedTask, {
-          actualMinutes: (linkedTask.actualMinutes || 0) + cleanMins,
-        });
-      }
+    // Update linked Task actualMinutes if present
+    if (linkedTask) {
+      await updateTask(linkedTask, {
+        actualMinutes: (linkedTask.actualMinutes || 0) + cleanMins,
+      });
+    }
 
-      // Update linked StudyItem lastStudiedDate if present
-      if (linkedItem) {
-        await updateStudyItem(linkedItem.id, {
-          lastStudiedDate: todayDate,
-          status: linkedItem.status === 'unstudied' ? 'studied' : linkedItem.status,
-        });
-      }
+    // Update linked StudyItem lastStudiedDate if present
+    if (linkedItem) {
+      await updateStudyItem(linkedItem.id, {
+        lastStudiedDate: todayDate,
+        status: linkedItem.status === 'unstudied' ? 'studied' : linkedItem.status,
+      });
     }
   };
 
@@ -3505,6 +4104,42 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return [];
   };
 
+  const importWorkspaceBackup = async (backup: Record<string, unknown>) => {
+    if (backup.profile && typeof backup.profile === 'object') {
+      const mergedProfile: UserProfile = {
+        ...createDefaultPersonalProfile(),
+        ...(backup.profile as Partial<UserProfile>),
+        uid: user?.uid || PERSONAL_OWNER_ID,
+      };
+      setProfile(mergedProfile);
+      saveLocalStore(LS_DATA_KEYS.profile, mergedProfile);
+    }
+    if (Array.isArray(backup.tasks)) setTasks(backup.tasks as TaskItem[]);
+    if (Array.isArray(backup.events)) setEvents(backup.events as CalendarEventItem[]);
+    if (Array.isArray(backup.studyModules)) {
+      setStudyModules(backup.studyModules as StudyModuleItem[]);
+    }
+    if (Array.isArray(backup.studyItems)) setStudyItems(backup.studyItems as StudyItemRecord[]);
+    if (Array.isArray(backup.healthLogs)) setHealthLogs(backup.healthLogs as HealthLogRecord[]);
+    if (Array.isArray(backup.financeRecords)) {
+      setFinanceRecords(backup.financeRecords as FinanceRecordItem[]);
+    }
+    if (Array.isArray(backup.knowledgeItems)) {
+      setKnowledgeItems(backup.knowledgeItems as KnowledgeItemRecord[]);
+    }
+    if (Array.isArray(backup.goalsHabits)) {
+      setGoalsHabits(backup.goalsHabits as GoalHabitRecord[]);
+    }
+    if (Array.isArray(backup.dailyReviews)) {
+      setDailyReviews(backup.dailyReviews as DailyReviewRecord[]);
+    }
+    if (Array.isArray(backup.pomodoroSessions)) {
+      const importedSessions = backup.pomodoroSessions as PomodoroSessionRecord[];
+      setLocalPomodoroSessions(importedSessions);
+      saveLocalStore('lifeos_pomodoro_sessions_v1', importedSessions);
+    }
+  };
+
   return (
     <LifeOSContext.Provider
       value={{
@@ -3565,6 +4200,7 @@ export const LifeOSProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         resolveAiProposal,
         deleteAiLog,
         saveDailyReview,
+        importWorkspaceBackup,
         clearAllWorkspaceData,
         startPomodoro,
         pausePomodoro,

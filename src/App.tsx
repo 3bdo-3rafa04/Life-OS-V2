@@ -31,7 +31,6 @@ import {
   Plus,
   Sun,
   Moon,
-  LogOut,
   X,
   Play,
   Pause,
@@ -174,8 +173,6 @@ const CONTEXTUAL_AI_PROMPTS: Record<PrimaryModuleId, string[]> = {
 
 const LifeOSShell: React.FC = () => {
   const {
-    user,
-    authReady,
     profile,
     tasks,
     events,
@@ -195,8 +192,6 @@ const LifeOSShell: React.FC = () => {
     closeRpgWorld,
     levelUpBanner,
     dismissLevelUpBanner,
-    signIn,
-    logOut,
   } = useLifeOS();
 
   const [activeModule, setActiveModule] = useState<PrimaryModuleId>('dashboard');
@@ -399,41 +394,6 @@ const LifeOSShell: React.FC = () => {
     };
   }, [activeModule]);
 
-  if (!authReady) {
-    return (
-      <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)] flex items-center justify-center">
-        <span className="text-sm font-medium text-[var(--text-muted)]">
-          Loading Life OS workspace...
-        </span>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)] flex items-center justify-center p-6">
-        <div className="max-w-md w-full sage-card p-8 space-y-6 text-center">
-          <div className="w-12 h-12 rounded-2xl bg-[var(--accent)] text-[#171E1B] font-bold text-lg flex items-center justify-center mx-auto">
-            LO
-          </div>
-          <div className="space-y-2">
-            <h1 className="text-2xl font-bold tracking-tight">Welcome to Life OS</h1>
-            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-              Minimal, intelligent personal productivity operating system for medical studies,
-              context-aware scheduling, fitness intelligence, and life planning.
-            </p>
-          </div>
-          <button
-            onClick={signIn}
-            className="w-full py-3 px-5 rounded-xl bg-[var(--accent)] text-[#171E1B] font-semibold text-sm hover:opacity-90 transition-opacity"
-          >
-            Continue with Google
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)] flex flex-col lg:flex-row">
       {/* =====================================================================
@@ -565,18 +525,14 @@ const LifeOSShell: React.FC = () => {
             </button>
           )}
 
-          <div className="flex items-center justify-between px-1 text-xs text-[var(--text-muted)]">
-            {!sidebarCollapsed && (
-              <span className="truncate max-w-[140px]">{profile?.displayName || user.email}</span>
-            )}
-            <button
-              onClick={logOut}
-              className="p-1.5 rounded-lg hover:bg-[var(--bg-secondary)] hover:text-[#D97777] mx-auto lg:mx-0"
-              title="Sign out"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          {!sidebarCollapsed && (
+            <div className="flex items-center justify-between px-1 text-xs text-[var(--text-muted)]">
+              <span className="truncate max-w-[180px]">
+                {profile?.displayName || 'Personal Workspace'}
+              </span>
+              <span className="text-[10px] font-mono text-[#6EBF8B]">Local</span>
+            </div>
+          )}
         </div>
       </aside>
 

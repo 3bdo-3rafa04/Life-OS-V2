@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLifeOS } from '../context/LifeOSContext';
 import { UserProfile } from '../types';
-import { Trash2, Download, Check } from 'lucide-react';
+import { Trash2, Download, Upload, Check } from 'lucide-react';
 
 interface SettingsViewProps {
   theme: 'dark' | 'light';
@@ -20,7 +20,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
     knowledgeItems,
     goalsHabits,
     dailyReviews,
+    pomodoroSessions,
     updateProfileSettings,
+    importWorkspaceBackup,
     clearAllWorkspaceData,
   } = useLifeOS();
 
@@ -42,9 +44,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
     profile?.aiRoutineAutoApprove ?? true
   );
 
-  const [savedToast, setSavedToast] = useState(false);
+  const [savedToast, setSavedToast] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (profile) {
@@ -63,7 +66,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     await updateProfileSettings({
-      displayName: displayName.trim() || 'User',
+      displayName: displayName.trim() || 'Personal Workspace',
       currency,
       city: city.trim() || 'Cairo',
       prayerMethod,
@@ -73,8 +76,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
       waterTargetMl: Number(waterTargetMl) || 3000,
       aiRoutineAutoApprove,
     });
-    setSavedToast(true);
-    setTimeout(() => setSavedToast(false), 3000);
+    setSavedToast('Settings saved to your workspace');
+    setTimeout(() => setSavedToast(null), 3000);
   };
 
   const handleExportJSON = () => {
@@ -90,6 +93,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
       knowledgeItems,
       goalsHabits,
       dailyReviews,
+      pomodoroSessions,
     };
     const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -98,6 +102,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
     a.download = `life-os-backup-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleImportJSON = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      await importWorkspaceBackup(parsed);
+      setSavedToast('Backup restored to your personal workspace');
+      setTimeout(() => setSavedToast(null), 3500);
+    } catch {
+      setSavedToast('Invalid JSON backup file');
+      setTimeout(() => setSavedToast(null), 3500);
+    } finally {
+      e.target.value = '';
+    }
   };
 
   const handleClearAll = async () => {
@@ -133,7 +154,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
         </div>
         {savedToast && (
           <div className="px-4 py-2 rounded-xl bg-[#6EBF8B]/20 text-[#6EBF8B] text-xs font-semibold flex items-center gap-1.5">
-            <Check className="w-4 h-4" /> Settings saved to Firestore
+            <Check className="w-4 h-4" /> {savedToast}
           </div>
         )}
       </div>
@@ -308,9 +329,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
           <div className="bg-[var(--bg-card)] border border-[var(--border-subtle)] rounded-2xl p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-base font-bold">Data &amp; Security</h2>
+                <h2 className="text-base font-bold">Data &amp; Backup</h2>
                 <p className="text-xs text-[var(--text-muted)]">
-                  {totalRecordsCount} live records stored in your isolated Firestore workspace
+                  {totalRecordsCount} live records saved automatically in your personal workspace
                 </p>
               </div>
             </div>
@@ -322,6 +343,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ theme, onToggleTheme
                 className="px-4 py-2 rounded-xl bg-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] text-xs font-semibold flex items-center gap-1.5"
               >
                 <Download className="w-3.5 h-3.5" /> Export Full JSON Backup
+              </button>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={handleImportJSON}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="px-4 py-2 rounded-xl bg-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] text-xs font-semibold flex items-center gap-1.5"
+              >
+                <Upload className="w-3.5 h-3.5" /> Import JSON Backup
               </button>
 
               {!confirmReset ? (
